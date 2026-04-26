@@ -1,0 +1,9 @@
+{
+  "name": "agentmarket-agents",
+  "version": "1.0.0",
+  "description": "Marketing campaign agents for AgentMarket demo",
+  "dependencies": {
+    "express": "^4.18.2"
+  },
+  "engines": { "node": ">=18" }
+}
