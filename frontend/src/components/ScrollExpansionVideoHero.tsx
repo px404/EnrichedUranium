@@ -1,3 +1,23 @@
+/**
+ * ⚠️  DEPRECATED IMPLEMENTATION — DO NOT EXTEND.
+ *
+ * This component currently uses `<video>.currentTime = scroll * duration` for
+ * scroll-scrubbing. That approach is broken because:
+ *   1. Browsers snap `<video>` seeks to keyframes (~every 1–2s in encoded H.264),
+ *      so most scroll positions render the same frame.
+ *   2. The rAF lerp asymptotes to but never reaches 1.0, so the video's final
+ *      frames are unreachable.
+ *
+ * The replacement is a frame-sequence engine: pre-extract the MP4 to JPEGs at
+ * build time and draw the active frame to a <canvas> on each scroll tick.
+ *
+ * Full spec, acceptance criteria, code skeletons, and Vercel deployment context
+ * live in `/SCROLL_HERO_HANDOFF.md` at the repo root. Read that BEFORE touching
+ * this file.
+ *
+ * When rewriting, KEEP the export name `ScrollExpansionVideoHero` and the
+ * `Waypoint` interface so `src/pages/Index.tsx` doesn't have to change.
+ */
 import { useEffect, useRef, useState } from 'react';
 import { PlayCircle } from 'lucide-react';
 
