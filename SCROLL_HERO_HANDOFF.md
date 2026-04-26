@@ -1,140 +1,39 @@
 # Scroll Hero — Frame Sequence Handoff
 
-**Audience**: a fresh Claude Code session picking up the scroll-hero work.
-**Status**: in-progress on branch `feat/scroll-video-hero`. Open PR: https://github.com/px404/EnrichedUranium/pull/1
-**Live preview** (current broken behavior): https://enriched-uranium.vercel.app
+**Branch**: `feat/scroll-video-hero` (PR #1)
+**File to fix**: `frontend/src/components/ScrollExpansionVideoHero.tsx`
+**Live broken preview**: https://enriched-uranium.vercel.app
 
-> Read this whole doc top to bottom before touching code. The "Why my approach failed" section explains why the obvious solution (`<video>.currentTime`) doesn't work — repeating that mistake is the most likely failure mode for the next agent.
-
----
-
-## 1. Goal
-
-A scroll-driven hero on the homepage where, as the user scrolls through the section, a 4-second cinematic clip of an orchestrator delegating to four subagents plays back. **Forward and reverse scroll must both feel buttery and continuous** — no stutter, no stuck frames, no "it only plays the first 2 seconds." Reference behavior: https://skeleton-rebuild.preview.emergentagent.com (Jo Mendes' Emergent demo) and Apple's AirPods Pro product pages — both use frame sequences.
-
-The video file is real and final: `frontend/public/videos/agentmesh-demo.mp4` (4.28 MB, generated via Veo 3.1, depicts the orchestration choreography).
+The current `<video>.currentTime` scrubbing is broken (browsers snap to keyframes ~every 2s, so most scroll positions render the same frame). Replace it with a frame-sequence engine: extract the MP4 to JPEGs at build time, draw the active frame to a `<canvas>` on scroll. Apple does this on every product page.
 
 ---
 
-## 2. Why my approach failed
+## Do this in order
 
-The current code at `frontend/src/components/ScrollExpansionVideoHero.tsx` uses an HTML5 `<video>` element and binds:
-
-```ts
-video.currentTime = scrollProgress * video.duration;
-```
-
-This is the obvious solution and it doesn't work. Two independent bugs:
-
-### Bug A — keyframe quantization (the dominant bug)
-
-Browsers can only seek a `<video>` to **keyframes** in the encoded stream. A typical H.264 export from Veo or any consumer tool has a keyframe interval of 1–2 seconds. So when you set `currentTime = 0.7`, the browser snaps to the keyframe at 0.5 and renders that frame — for *every* scroll position between 0.5 and 1.5. The result: ~3 frames visible across an entire 4-second clip. Looks broken.
-
-You **cannot** fix this from the client side. You'd need to re-encode the source video with a keyframe at every frame (`-g 1` in ffmpeg), which destroys compression and balloons the file 5–10x. At that point you're better off using actual frames.
-
-### Bug B — rAF lerp asymptote
-
-The current smoothing is:
-```ts
-current += (target - current) * 0.18;
-```
-
-Because lerp converges asymptotically, `current` never quite reaches `target`. At `target = 1.0` (full scroll) you stabilize around `current ≈ 0.999…`. So `video.currentTime = 0.999 * duration` — never the actual end. The final frames are unreachable. This is fixable (snap to target when |delta| < 0.001), but Bug A makes it irrelevant — even if `currentTime` were perfect, the browser wouldn't seek there anyway.
-
----
-
-## 3. The right approach: frame sequence + canvas
-
-**Pre-extract** the MP4 into a directory of JPEG frames at build time. **At runtime** the component loads all frames, tracks scroll, and on each scroll tick draws the appropriate frame onto a `<canvas>`. There is no `<video>` element involved at runtime.
-
-Why this works:
-- Each scroll position maps to a **distinct image** — no keyframe quantization
-- `Image.decode()` is fast (~5 ms for a 1280×720 JPEG), faster than video seek
-- Works identically on iOS Safari, which is notoriously bad at `<video>.currentTime` scrubbing
-- Total payload is comparable to the MP4 (~5 MB of JPEGs ≈ one 4 MB MP4)
-- Frame index is a pure integer — reverse scroll is trivially symmetric
-
-This is exactly what Apple does on `apple.com/airpods-pro` (open DevTools → Network → filter `image` → watch the frame sequence load) and what every premium scroll-scrubbed product page does.
-
----
-
-## 4. Acceptance criteria (test these before declaring done)
-
-- [ ] Scrolling the hero section forward visibly steps through every frame from start to end with no visual sticking
-- [ ] Scrolling reverse plays back symmetrically with the same smoothness
-- [ ] At scroll progress 0%, frame 0 is rendered. At 100%, the final frame is rendered. Verify both with DevTools.
-- [ ] Component falls back to a stacked-waypoint layout over a still hero image (frame 0) when:
-  - `prefers-reduced-motion: reduce` is set
-  - `navigator.deviceMemory < 4` OR `window.innerWidth < 768`
-  - The frames directory 404s (graceful degrade)
-- [ ] Frame extraction runs as part of `npm run build` (so Vercel auto-extracts on deploy)
-- [ ] Frame extraction works on Linux (Vercel's build env) AND on Windows (the developer's machine)
-- [ ] No new entries in `frontend/.gitignore` are missing — the `frames/` directory should NOT be committed (it's regenerated from the MP4)
-- [ ] Total transfer size of the hero section < 6 MB (sum of all loaded JPEGs)
-- [ ] First-paint perceived hero image renders within ~300 ms — preload the first frame as `<link rel="preload">`
-- [ ] `npm run lint` clean
-- [ ] `npm run build` clean on both Windows local and Vercel
-- [ ] The existing `<ScrollExpansionVideoHero />` import in `src/pages/Index.tsx` line 100 keeps working unchanged. **Do not** rename the component or change its public API.
-
----
-
-## 5. File plan
-
-```
-frontend/
-├── public/
-│   ├── videos/
-│   │   └── agentmesh-demo.mp4          # KEEP — source of truth
-│   └── frames/
-│       └── agentmesh-demo/             # NEW — gitignored, regenerated
-│           ├── 000.jpg
-│           ├── 001.jpg
-│           ├── …
-│           └── 095.jpg
-├── scripts/
-│   └── extract-hero-frames.mjs         # NEW
-├── src/
-│   └── components/
-│       └── ScrollExpansionVideoHero.tsx # REWRITE internals, keep export name
-├── package.json                        # add prebuild + ffmpeg deps
-└── .gitignore                          # add public/frames/
-```
-
----
-
-## 6. Implementation steps
-
-### 6.1 Install ffmpeg deps
+### 1. Install the build-time deps
 
 ```bash
 cd frontend
-npm install --save-dev @ffmpeg-installer/ffmpeg fluent-ffmpeg
-npm install --save-dev --save-exact @types/fluent-ffmpeg
+npm install --save-dev @ffmpeg-installer/ffmpeg fluent-ffmpeg @types/fluent-ffmpeg
 ```
 
-`@ffmpeg-installer/ffmpeg` ships a precompiled ffmpeg binary for the host platform (Linux on Vercel, Windows locally). Zero config. Adds ~80 MB to `node_modules` but `node_modules` isn't committed.
-
-### 6.2 Extraction script
-
-`frontend/scripts/extract-hero-frames.mjs`:
+### 2. Create `frontend/scripts/extract-hero-frames.mjs`
 
 ```js
 import ffmpegInstaller from '@ffmpeg-installer/ffmpeg';
 import ffmpeg from 'fluent-ffmpeg';
-import { existsSync, mkdirSync, readdirSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 ffmpeg.setFfmpegPath(ffmpegInstaller.path);
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const ROOT = resolve(__dirname, '..');
-
+const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const SOURCE = resolve(ROOT, 'public/videos/agentmesh-demo.mp4');
 const OUT_DIR = resolve(ROOT, 'public/frames/agentmesh-demo');
-const TARGET_FPS = 24;            // tune: more frames = smoother + bigger payload
-const TARGET_WIDTH = 1280;        // 720p hero is plenty for retina; downscale aggressively
-const JPEG_QUALITY = 4;           // ffmpeg's qscale: 1=best, 31=worst. 3-5 is the sweet spot.
+const TARGET_FPS = 24;
+const TARGET_WIDTH = 1280;
+const JPEG_QUALITY = 4; // ffmpeg qscale: 1=best, 31=worst. 3-5 is the sweet spot.
 
 if (!existsSync(SOURCE)) {
   console.error(`[hero-frames] missing source video: ${SOURCE}`);
@@ -144,80 +43,91 @@ if (!existsSync(SOURCE)) {
 if (existsSync(OUT_DIR)) rmSync(OUT_DIR, { recursive: true, force: true });
 mkdirSync(OUT_DIR, { recursive: true });
 
-console.log(`[hero-frames] extracting ${SOURCE} → ${OUT_DIR}`);
+console.log(`[hero-frames] extracting ${SOURCE} -> ${OUT_DIR}`);
 
-await new Promise((resolveP, rejectP) => {
+await new Promise((res, rej) => {
   ffmpeg(SOURCE)
     .outputOptions([
       `-vf scale=${TARGET_WIDTH}:-2,fps=${TARGET_FPS}`,
       `-qscale:v ${JPEG_QUALITY}`,
     ])
     .output(`${OUT_DIR}/%03d.jpg`)
-    .on('end', resolveP)
-    .on('error', rejectP)
+    .on('end', res)
+    .on('error', rej)
     .run();
 });
 
 const frames = readdirSync(OUT_DIR).filter((f) => f.endsWith('.jpg')).sort();
-console.log(`[hero-frames] wrote ${frames.length} frames`);
-
-// Emit a manifest the component can read so frame count isn't hardcoded
-const manifest = {
-  source: 'agentmesh-demo.mp4',
-  count: frames.length,
-  width: TARGET_WIDTH,
-  fps: TARGET_FPS,
-  pattern: '/frames/agentmesh-demo/{INDEX:03}.jpg',
-};
-const { writeFileSync } = await import('node:fs');
-writeFileSync(`${OUT_DIR}/manifest.json`, JSON.stringify(manifest, null, 2));
+writeFileSync(
+  `${OUT_DIR}/manifest.json`,
+  JSON.stringify(
+    {
+      source: 'agentmesh-demo.mp4',
+      count: frames.length,
+      width: TARGET_WIDTH,
+      fps: TARGET_FPS,
+      pattern: '/frames/agentmesh-demo/{INDEX:03}.jpg',
+    },
+    null,
+    2
+  )
+);
+console.log(`[hero-frames] wrote ${frames.length} frames + manifest.json`);
 ```
 
-Notes:
-- ffmpeg renames frames `001.jpg`, `002.jpg`, … (1-indexed). The component should treat indices as 0-based and add 1 when constructing URLs, OR the script should be tweaked to start at 000. Pick one and be consistent.
-- A 4-second video at 24fps = 96 frames. At 1280×720 with qscale 4 each frame is ~50 KB → ~5 MB total. Adjust `TARGET_FPS` down to 15 if you need to trim payload.
-- `manifest.json` lets the component read `count` at runtime instead of hardcoding 96.
+### 3. Patch `frontend/package.json`
 
-### 6.3 Wire into package.json
+Replace the `build` script and add `frames`:
 
-```diff
-   "scripts": {
-     "dev": "vite",
--    "build": "vite build",
-+    "build": "node scripts/extract-hero-frames.mjs && vite build",
-     "build:dev": "vite build --mode development",
-     "lint": "eslint .",
-     "preview": "vite preview",
-+    "frames": "node scripts/extract-hero-frames.mjs",
-     "test": "vitest run",
-     "test:watch": "vitest"
-   },
+```json
+"scripts": {
+  "dev": "vite",
+  "build": "node scripts/extract-hero-frames.mjs && vite build",
+  "build:dev": "node scripts/extract-hero-frames.mjs && vite build --mode development",
+  "lint": "eslint .",
+  "preview": "vite preview",
+  "frames": "node scripts/extract-hero-frames.mjs",
+  "test": "vitest run",
+  "test:watch": "vitest"
+}
 ```
 
-`prebuild` would also work but Vercel doesn't always run npm lifecycle hooks the way you expect; chaining inside `build` is the bulletproof option.
+### 4. Append to `frontend/.gitignore`
 
-### 6.4 Update .gitignore
-
-```diff
-+# Generated hero frames (regenerated from public/videos/agentmesh-demo.mp4 on every build)
-+public/frames/
+```
+# Generated hero frames (regenerated from public/videos/agentmesh-demo.mp4 on every build)
+public/frames/
 ```
 
-The MP4 is committed; the frames are not. Single source of truth.
+### 5. Run the extraction once
 
-### 6.5 Component rewrite
+```bash
+cd frontend
+npm run frames
+```
 
-Keep the file path (`frontend/src/components/ScrollExpansionVideoHero.tsx`), keep the export name (`ScrollExpansionVideoHero`), keep the `Waypoint` interface and `DEFAULT_WAYPOINTS` so `Index.tsx` doesn't change.
+Expected output: `[hero-frames] wrote 96 frames + manifest.json`. Verify with:
 
-Replace the internals with the canvas + frame-sequence engine. Key parts:
+```bash
+ls public/frames/agentmesh-demo
+# 001.jpg ... 096.jpg manifest.json
+```
+
+If you get fewer frames than expected, check `TARGET_FPS` (24 × 4s clip = 96 frames).
+
+### 6. Replace `frontend/src/components/ScrollExpansionVideoHero.tsx` entirely
+
+Overwrite the file with this. The export name and the `Waypoint` interface are preserved so `Index.tsx` doesn't change.
 
 ```tsx
 import { useEffect, useRef, useState } from 'react';
+import { PlayCircle } from 'lucide-react';
 
-// … keep Waypoint interface and DEFAULT_WAYPOINTS …
-
-const MANIFEST_URL = '/frames/agentmesh-demo/manifest.json';
-const SECTION_HEIGHT_VH = 250;
+export interface Waypoint {
+  progress: number;
+  title: string;
+  caption?: string;
+}
 
 interface FrameManifest {
   count: number;
@@ -226,74 +136,82 @@ interface FrameManifest {
   pattern: string;
 }
 
-function frameUrlFromPattern(pattern: string, index: number) {
-  // pattern looks like '/frames/agentmesh-demo/{INDEX:03}.jpg'
+interface ScrollExpansionVideoHeroProps {
+  manifestUrl?: string;
+  waypoints?: Waypoint[];
+}
+
+const DEFAULT_WAYPOINTS: Waypoint[] = [
+  { progress: 0.00, title: 'One ask',          caption: 'A prompt arrives at the orchestrator.' },
+  { progress: 0.33, title: 'Four delegations', caption: 'Specialists are summoned in parallel.' },
+  { progress: 0.66, title: 'Lightning flows',  caption: 'Hashes and prompts stream both ways.' },
+  { progress: 0.95, title: 'Done in seconds',  caption: 'Verified, settled, shipped.' },
+];
+
+const SECTION_HEIGHT_VH = 250;
+const FALLBACK_STILL = '/frames/agentmesh-demo/001.jpg';
+
+function frameUrl(pattern: string, index1Based: number) {
   return pattern.replace(/\{INDEX:(\d+)\}/, (_, w) =>
-    String(index + 1).padStart(parseInt(w, 10), '0')
+    String(index1Based).padStart(parseInt(w, 10), '0')
   );
 }
 
-function useFrameSequence(manifest: FrameManifest | null) {
-  const imagesRef = useRef<HTMLImageElement[]>([]);
-  const [readyCount, setReadyCount] = useState(0);
-
-  useEffect(() => {
-    if (!manifest) return;
-    const imgs: HTMLImageElement[] = [];
-    let cancelled = false;
-    let loaded = 0;
-    for (let i = 0; i < manifest.count; i++) {
-      const img = new Image();
-      img.decoding = 'async';
-      img.src = frameUrlFromPattern(manifest.pattern, i);
-      img.onload = () => {
-        if (cancelled) return;
-        loaded += 1;
-        setReadyCount(loaded);
-      };
-      img.onerror = () => {
-        if (cancelled) return;
-        loaded += 1;
-        setReadyCount(loaded);
-      };
-      imgs.push(img);
-    }
-    imagesRef.current = imgs;
-    return () => { cancelled = true; };
-  }, [manifest]);
-
-  return { images: imagesRef, readyCount };
-}
-
 export function ScrollExpansionVideoHero({
+  manifestUrl = '/frames/agentmesh-demo/manifest.json',
   waypoints = DEFAULT_WAYPOINTS,
 }: ScrollExpansionVideoHeroProps) {
   const sectionRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const imagesRef = useRef<HTMLImageElement[]>([]);
+
   const [manifest, setManifest] = useState<FrameManifest | null>(null);
   const [manifestFailed, setManifestFailed] = useState(false);
   const [progress, setProgress] = useState(0);
   const [reducedMotion, setReducedMotion] = useState(false);
   const [lowEnd, setLowEnd] = useState(false);
 
-  // Load manifest
   useEffect(() => {
-    fetch(MANIFEST_URL)
-      .then((r) => (r.ok ? r.json() : Promise.reject()))
-      .then(setManifest)
-      .catch(() => setManifestFailed(true));
+    let cancelled = false;
+    fetch(manifestUrl)
+      .then((r) => (r.ok ? r.json() : Promise.reject(new Error('manifest 404'))))
+      .then((m: FrameManifest) => { if (!cancelled) setManifest(m); })
+      .catch(() => { if (!cancelled) setManifestFailed(true); });
+    return () => { cancelled = true; };
+  }, [manifestUrl]);
+
+  useEffect(() => {
+    const rm = window.matchMedia('(prefers-reduced-motion: reduce)');
+    const update = () => setReducedMotion(rm.matches);
+    update();
+    rm.addEventListener('change', update);
+
+    const navAny = navigator as Navigator & { deviceMemory?: number };
+    const memLow = typeof navAny.deviceMemory === 'number' && navAny.deviceMemory < 4;
+    const widthLow = window.innerWidth < 768;
+    setLowEnd(memLow || widthLow);
+
+    return () => rm.removeEventListener('change', update);
   }, []);
-
-  // Reduced motion + low-end detect (same as before)
-  useEffect(() => { /* … */ }, []);
-
-  const { images, readyCount } = useFrameSequence(manifest);
 
   const useStatic = reducedMotion || lowEnd || manifestFailed;
 
-  // Scroll → progress (pure rAF, snap to target if close)
   useEffect(() => {
-    if (useStatic || !manifest) return;
+    if (!manifest || useStatic) return;
+    const imgs: HTMLImageElement[] = [];
+    for (let i = 0; i < manifest.count; i++) {
+      const img = new Image();
+      img.decoding = 'async';
+      img.src = frameUrl(manifest.pattern, i + 1);
+      imgs.push(img);
+    }
+    imagesRef.current = imgs;
+    return () => { imagesRef.current = []; };
+  }, [manifest, useStatic]);
+
+  useEffect(() => {
+    if (!manifest || useStatic) return;
+
     let rafId = 0;
     let target = 0;
     let current = 0;
@@ -314,22 +232,20 @@ export function ScrollExpansionVideoHero({
       setProgress(current);
 
       const canvas = canvasRef.current;
-      if (canvas && manifest && images.current.length) {
+      const imgs = imagesRef.current;
+      if (canvas && imgs.length) {
         const idx = Math.min(
-          manifest.count - 1,
-          Math.max(0, Math.round(current * (manifest.count - 1)))
+          imgs.length - 1,
+          Math.max(0, Math.round(current * (imgs.length - 1)))
         );
-        const img = images.current[idx];
+        const img = imgs[idx];
         if (img && img.complete && img.naturalWidth > 0) {
-          const ctx = canvas.getContext('2d');
-          if (ctx) {
-            // Match canvas internal size to image once, then drawImage stretches
-            if (canvas.width !== img.naturalWidth) {
-              canvas.width = img.naturalWidth;
-              canvas.height = img.naturalHeight;
-            }
-            ctx.drawImage(img, 0, 0);
+          if (canvas.width !== img.naturalWidth) {
+            canvas.width = img.naturalWidth;
+            canvas.height = img.naturalHeight;
           }
+          const ctx = canvas.getContext('2d');
+          if (ctx) ctx.drawImage(img, 0, 0);
         }
       }
       rafId = requestAnimationFrame(draw);
@@ -344,94 +260,247 @@ export function ScrollExpansionVideoHero({
       window.removeEventListener('scroll', onScroll);
       window.removeEventListener('resize', onScroll);
     };
-  }, [manifest, useStatic, images]);
+  }, [manifest, useStatic]);
 
-  // Render: section ref, sticky inner, canvas full-bleed, waypoints absolutely positioned with computed opacity
-  // (reuse the existing JSX layout from the current component for the section + waypoints + scroll bar)
-  // Replace the <video> tag with <canvas ref={canvasRef} className="absolute inset-0 w-full h-full object-cover" />
-  // …
+  const computeOpacity = (idx: number) => {
+    const wp = waypoints[idx];
+    const next = waypoints[idx + 1];
+    const start = wp.progress;
+    const end = next ? next.progress : 1.0;
+    const fadeBand = 0.05;
+
+    if (progress < start - fadeBand) return 0;
+    if (progress < start) return (progress - (start - fadeBand)) / fadeBand;
+    if (progress < end - fadeBand) return 1;
+    if (progress < end) return Math.max(0, 1 - (progress - (end - fadeBand)) / fadeBand);
+    return idx === waypoints.length - 1 ? 1 : 0;
+  };
+
+  return (
+    <section
+      ref={sectionRef}
+      id="scroll-expansion-hero"
+      className="relative border-y border-border bg-background"
+      style={{ height: useStatic ? 'auto' : `${SECTION_HEIGHT_VH}vh` }}
+      aria-label="Scroll-controlled product demo"
+    >
+      <div className={useStatic ? 'relative py-20 md:py-28' : 'sticky top-0 h-screen overflow-hidden'}>
+        <div className="relative w-full h-full">
+          {!useStatic && (
+            <canvas
+              ref={canvasRef}
+              className="absolute inset-0 w-full h-full object-cover bg-black"
+              aria-hidden
+            />
+          )}
+
+          {useStatic && (
+            <img
+              src={FALLBACK_STILL}
+              alt=""
+              className="absolute inset-0 w-full h-full object-cover bg-black"
+              aria-hidden
+              onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = 'none'; }}
+            />
+          )}
+
+          {useStatic && (
+            <div
+              className="absolute inset-0 pointer-events-none"
+              style={{
+                background:
+                  'radial-gradient(ellipse at 30% 20%, hsl(205 90% 68% / 0.18), transparent 50%),' +
+                  'radial-gradient(ellipse at 70% 80%, hsl(205 90% 68% / 0.12), transparent 55%),' +
+                  'linear-gradient(180deg, hsl(0 0% 5%), hsl(0 0% 3%))',
+              }}
+              aria-hidden
+            />
+          )}
+
+          <div
+            className="absolute inset-0 pointer-events-none"
+            style={{
+              background:
+                'linear-gradient(180deg, hsl(0 0% 4% / 0.55) 0%, hsl(0 0% 4% / 0.15) 35%, hsl(0 0% 4% / 0.25) 65%, hsl(0 0% 4% / 0.85) 100%)',
+            }}
+            aria-hidden
+          />
+
+          {useStatic ? (
+            <div className="container relative">
+              <div className="max-w-3xl space-y-14">
+                <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full border border-primary/30 bg-primary/10 text-primary text-xs font-medium">
+                  <PlayCircle className="h-3.5 w-3.5" />
+                  Immersive product demo
+                </div>
+                {waypoints.map((wp, i) => (
+                  <div key={i} className="motion-fade-up">
+                    <div className="text-[11px] font-mono uppercase tracking-wider text-muted-foreground mb-2">
+                      {String(i + 1).padStart(2, '0')} / {String(waypoints.length).padStart(2, '0')}
+                    </div>
+                    <h2 className="text-3xl md:text-5xl font-bold tracking-tight">{wp.title}</h2>
+                    {wp.caption && (
+                      <p className="mt-3 text-base text-muted-foreground max-w-2xl">{wp.caption}</p>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : (
+            <div className="container relative h-full flex items-center">
+              <div className="w-full max-w-3xl">
+                <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full border border-primary/30 bg-primary/10 text-primary text-xs font-medium mb-8 backdrop-blur-sm">
+                  <PlayCircle className="h-3.5 w-3.5" />
+                  Immersive product demo
+                </div>
+                <div className="relative min-h-[40vh] md:min-h-[44vh]">
+                  {waypoints.map((wp, i) => {
+                    const opacity = computeOpacity(i);
+                    if (opacity <= 0.001) return null;
+                    return (
+                      <div
+                        key={i}
+                        className="absolute inset-x-0 top-0 will-change-[opacity,transform]"
+                        style={{
+                          opacity,
+                          transform: `translateY(${(1 - opacity) * 14}px)`,
+                          transition: 'opacity 60ms linear',
+                        }}
+                      >
+                        <div className="text-[11px] font-mono uppercase tracking-wider text-muted-foreground mb-3">
+                          {String(i + 1).padStart(2, '0')} / {String(waypoints.length).padStart(2, '0')}
+                        </div>
+                        <h2 className="text-3xl md:text-6xl font-bold tracking-tight leading-[1.05]">{wp.title}</h2>
+                        {wp.caption && (
+                          <p className="mt-4 text-base md:text-lg text-muted-foreground max-w-2xl">{wp.caption}</p>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            </div>
+          )}
+
+          {!useStatic && (
+            <div className="absolute bottom-6 left-0 right-0 pointer-events-none">
+              <div className="container">
+                <div className="flex items-center gap-3 text-[10px] font-mono uppercase tracking-wider text-muted-foreground">
+                  <span>Scroll</span>
+                  <div className="flex-1 h-px bg-border/80 relative overflow-hidden">
+                    <div
+                      className="absolute inset-y-0 left-0 bg-primary"
+                      style={{ width: `${Math.min(100, progress * 100)}%` }}
+                    />
+                  </div>
+                  <span className="tabular-nums">{String(Math.round(progress * 100)).padStart(2, '0')}%</span>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+    </section>
+  );
 }
 ```
 
-Critical implementation notes:
-- **Don't `setState` inside the rAF loop for the canvas draw** — drawing to canvas is a side effect that doesn't need React reconciliation. Only `setProgress` if the waypoint opacity computation needs it. (You could even drop the `setProgress` call and compute waypoint opacity from `current` directly with a separate state-less mechanism, but `setProgress` is simpler and runs at most ~60fps.)
-- **Preload the first frame** for fast initial paint. Add a `<link rel="preload" as="image" href="/frames/agentmesh-demo/001.jpg">` in `index.html` or via React.
-- **Use `object-fit: cover`** semantics on the canvas: set canvas internal size to match the image (`naturalWidth × naturalHeight`), then CSS-stretch it to fill the container (`width:100%; height:100%; object-fit:cover`).
-- **Don't worry about progressive frame loading.** All frames are ~50 KB; a fast connection grabs all 96 in parallel in <2s. On a slow connection, the user sees frame 0 (the still) until frames load — that's fine.
+### 7. Smoke test locally
 
-### 6.6 Static fallback
+```bash
+npm run dev
+```
 
-For `useStatic === true`: render `<img src="/frames/agentmesh-demo/001.jpg">` as a still hero, stack the four waypoints below as separate text blocks, no scroll-scrub. Same as the current component does for the static branch.
+Open `http://localhost:8080`, scroll the hero section forward and back. Frames should advance smoothly from start to end with no sticking. Check Network tab — you should see ~96 JPEGs load in parallel, no `.mp4` fetched at runtime.
 
-### 6.7 Cleanup
+### 8. Lint + build
 
-Once the new implementation is verified live, **delete or comment out the old `<video>`-based render path**. Don't leave both behind.
+```bash
+npm run lint
+npm run build
+npm run preview
+```
+
+All three must exit 0. The `build` step runs frame extraction first, so `dist/frames/agentmesh-demo/` will end up populated.
+
+### 9. Commit + push
+
+```bash
+cd ..   # back to repo root
+git add frontend/package.json frontend/package-lock.json frontend/.gitignore frontend/scripts/extract-hero-frames.mjs frontend/src/components/ScrollExpansionVideoHero.tsx
+git commit -m "feat(scroll-hero): replace video.currentTime scrubbing with frame-sequence canvas engine"
+git push origin feat/scroll-video-hero
+```
+
+PR #1 auto-updates.
+
+### 10. Deploy to Vercel
+
+```bash
+cd frontend
+vercel deploy --prod --yes
+```
+
+(Auto-deploy from GitHub may still be disconnected — fallback is the manual command above.)
+
+### 11. Verify on prod
+
+Open https://enriched-uranium.vercel.app and run the [acceptance checks](#acceptance-checks) below.
 
 ---
 
-## 7. Performance budget
+## Acceptance checks
 
-| Metric | Target | How to verify |
+Tick all of these before declaring done:
+
+- [ ] **Forward scroll**: every frame from 001 → final visible during scroll, no sticking
+- [ ] **Reverse scroll**: same smoothness backward
+- [ ] **Endpoints reachable**: scrolled to 0% shows frame 001; scrolled to 100% shows the final frame (verify in DevTools Elements panel — canvas pixel data, or set a breakpoint on `idx`)
+- [ ] **Reduced motion**: in DevTools → Rendering → Emulate CSS `prefers-reduced-motion: reduce`, page falls back to stacked waypoints over still frame 001
+- [ ] **Low-end**: resize viewport < 768px width, same fallback kicks in
+- [ ] **404 graceful**: temporarily rename `public/frames/agentmesh-demo/manifest.json` to break it, reload — fallback renders, no console errors
+- [ ] **Total payload**: DevTools Network filter `frames/`, total size < 6 MB
+- [ ] **No `<video>` left in the DOM**: search rendered HTML for `<video` — should return nothing
+- [ ] **`npm run build` clean** locally and on Vercel
+
+---
+
+## If something breaks
+
+| Symptom | Cause | Fix |
 |---|---|---|
-| Total transferred bytes for hero | < 6 MB | DevTools Network panel, filter `frames/` |
-| First Contentful Paint | < 1.2 s | Lighthouse |
-| Frame count | 60–96 | `manifest.json` |
-| Per-frame size | < 80 KB | `ls -lah public/frames/agentmesh-demo/` |
-| Scroll FPS during scrub | 60 | DevTools Performance recording while scrolling |
-| Build time impact | < 15 s extra | `npm run build` timing before vs after |
-
-If any of these blow out, the levers are: lower `TARGET_FPS` (24 → 15), lower `TARGET_WIDTH` (1280 → 960), raise `JPEG_QUALITY` qscale value (4 → 6).
+| `npm run frames` fails with `Cannot find module '@ffmpeg-installer/ffmpeg'` | Step 1 didn't run | `cd frontend && npm install` |
+| Vercel build fails on extraction step | ffmpeg binary missing for the build platform | The `@ffmpeg-installer/ffmpeg` package ships a Linux binary; if it still fails, check Vercel's build log for permission errors and add `chmod +x` to the script |
+| Canvas is blank on first scroll, then fills in | First-frame race — manifest loaded but images not yet decoded | Already handled by `img.complete && naturalWidth > 0` guard. If still blank, check DevTools Network tab to confirm frames are 200, not 404 |
+| Scrub feels choppy on a fast laptop | Lerp factor too low, or React re-renders on every rAF | Verify `setProgress` is the only React state update in the rAF loop. If still choppy, raise `lerp` from `0.2` to `0.35` |
+| Frames look stretched / aspect wrong | `object-fit: cover` not winning over canvas internal size | Canvas internal pixels (`canvas.width/height`) are set from image; CSS sizes the element. Both must coexist. The provided JSX is correct — don't add an explicit `width=` attribute to the canvas |
+| Build artifact size > 10 MB | Too many frames or quality too high | Drop `TARGET_FPS` to 15 or raise `JPEG_QUALITY` qscale to 6. Re-run `npm run frames` and check `du -sh public/frames/agentmesh-demo` |
 
 ---
 
-## 8. Files to read before touching code
+## Out of scope
 
-In order:
-
-1. `frontend/src/components/ScrollExpansionVideoHero.tsx` — the broken implementation. Skim it, understand the waypoint copy (`One ask` / `Four delegations` / `Lightning flows` / `Done in seconds`), and notice it must keep its export name.
-2. `frontend/src/pages/Index.tsx` line 100 — the integration point. Don't change it.
-3. `frontend/src/index.css` — design tokens (`--surface`, `--border`, `--primary`, `--primary-glow`). Reuse these for any new styling.
-4. `c:/Users/omark/.cursor/plans/video-prompt-and-model-pick_0aad4727.plan.md` — the plan file with the Veo prompt and original kit-spec behavior list. Do **not** edit this file.
-5. https://github.com/px404/EnrichedUranium/pull/1 — current state of the branch.
+- No new runtime dependencies (build-time only: `@ffmpeg-installer/ffmpeg`, `fluent-ffmpeg`)
+- Don't touch `Index.tsx`, `Navbar`, routing, `lib/*`, `pages/Monitor.tsx`, `pages/Wallets.tsx`, or any backend wiring
+- Don't rename the component or change its public API
+- Don't replace the source MP4
+- Don't edit `c:/Users/omark/.cursor/plans/video-prompt-and-model-pick_0aad4727.plan.md`
 
 ---
 
-## 9. Repo + deployment context
+## Reference (only read if something doesn't match expectations)
 
-- Active repo: `https://github.com/px404/EnrichedUranium` (the React app is at `frontend/`)
-- Working branch: `feat/scroll-video-hero` — push fix commits here, the PR auto-updates
-- Pixel-perfect repo (`https://github.com/omarjku/pixel-perfect`): the original repo before the monorepo move; mirror commits there if convenient, otherwise focus on EnrichedUranium
-- Vercel project: `enriched-uranium` (team `omars-projects-d8464da7`), live at https://enriched-uranium.vercel.app
-- Vercel ↔ GitHub auto-deploy: NOT YET CONNECTED at time of writing. Owner needs to grant the Vercel GitHub app access to `px404` org. Until then, deploys are manual via `vercel deploy --prod --yes` from `frontend/`.
+**Why the existing `<video>.currentTime` approach is broken**
+Browsers can only seek `<video>` to keyframes in the encoded H.264 stream. Veo and most consumer encoders place keyframes every 1–2 seconds. So setting `currentTime = 0.7` snaps to the keyframe at 0.5; setting it to `1.2` also snaps to 0.5; etc. Most scroll positions render the same frame. This is unfixable on the client without re-encoding the source with `-g 1` (keyframe every frame), which destroys compression. Use frames instead.
 
----
+**Why the existing rAF lerp also asymptotes**
+`current += (target - current) * 0.18` converges geometrically; `current` never reaches `target`. At full scroll, `current ≈ 0.999...`. Final frames unreachable. The replacement uses `current = Math.abs(delta) < 0.001 ? target : current + delta * lerp` to snap when close.
 
-## 10. Out of scope
+**Why frame sequences win**
+Each scroll position maps to a distinct image. `Image.decode()` is ~5 ms for a 1280×720 JPEG. iOS Safari handles this perfectly while it's notoriously bad at `<video>` scrubbing. Total payload ~5 MB ≈ original MP4. Reverse scroll is trivially symmetric (frame index is an integer).
 
-- Three.js / WebGL — the hero must be a 2D canvas drawing image frames. No 3D.
-- Touching the teammate's backend wiring (`frontend/src/lib/{api,adapters,identity,keypair}.ts` or `frontend/src/pages/{Monitor,Wallets}.tsx`)
-- Replacing the video file
-- Renaming the component or changing its public props
-- Editing the plan file at `c:/Users/omark/.cursor/plans/video-prompt-and-model-pick_0aad4727.plan.md`
-- Adding any new runtime dependency. Build-time deps (`@ffmpeg-installer/ffmpeg`, `fluent-ffmpeg`) only.
+**Reference implementations**: Apple's product pages (e.g. AirPods Pro), Jo Mendes' Emergent demo at https://skeleton-rebuild.preview.emergentagent.com — both use this exact technique.
 
----
-
-## 11. Open questions to confirm with the user before merging
-
-1. Frame budget — 96 frames at 24fps gives the smoothest scrub but ~5 MB. Cut to 60 frames at 15fps and it's ~3 MB but slightly less smooth. Default to 24fps unless they ask.
-2. Should the hero section's outer height stay at 250vh, or tighten to 200vh now that the video is a known 4-second clip? Try both, pick what feels right.
-3. After this lands, do they want the first frame to be a designed poster (still illustration) or just frame 0 of the video? Default to frame 0 for now — they can swap to a custom poster later by replacing the file.
-
----
-
-## 12. Definition of done
-
-- `npm run build` works on Windows local
-- Vercel production deploy works (verify https://enriched-uranium.vercel.app shows the new behavior)
-- Scrolling forward and backward both feel smooth, every frame is reachable, no sticking
-- All three fallback paths (reduced-motion / low-end / 404) tested in DevTools
-- PR #1 description updated with a screenshot or short video of the working scrub
-- Old `<video>`-based code removed from the component
-- `.gitignore` includes `public/frames/`
-- This handoff doc gets a final commit moving its status from "in-progress" to "done", or gets deleted if you'd rather not retain it
+**Live preview of broken behavior**: https://enriched-uranium.vercel.app
+**PR**: https://github.com/px404/EnrichedUranium/pull/1
+**Source video**: `frontend/public/videos/agentmesh-demo.mp4` (4.28 MB, Veo 3.1, 4 seconds, 24fps — keep it, it's the source of truth)
