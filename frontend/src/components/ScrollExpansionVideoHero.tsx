@@ -1,25 +1,11 @@
-/**
- * ⚠️  DEPRECATED IMPLEMENTATION — DO NOT EXTEND.
- *
- * This component currently uses `<video>.currentTime = scroll * duration` for
- * scroll-scrubbing. That approach is broken because:
- *   1. Browsers snap `<video>` seeks to keyframes (~every 1–2s in encoded H.264),
- *      so most scroll positions render the same frame.
- *   2. The rAF lerp asymptotes to but never reaches 1.0, so the video's final
- *      frames are unreachable.
- *
- * The replacement is a frame-sequence engine: pre-extract the MP4 to JPEGs at
- * build time and draw the active frame to a <canvas> on each scroll tick.
- *
- * Full spec, acceptance criteria, code skeletons, and Vercel deployment context
- * live in `/SCROLL_HERO_HANDOFF.md` at the repo root. Read that BEFORE touching
- * this file.
- *
- * When rewriting, KEEP the export name `ScrollExpansionVideoHero` and the
- * `Waypoint` interface so `src/pages/Index.tsx` doesn't have to change.
- */
 import { useEffect, useRef, useState } from 'react';
 import { PlayCircle } from 'lucide-react';
+import {
+  drawImageCover,
+  frameIndexForProgress,
+  frameUrl,
+  type FrameManifest,
+} from './scrollExpansionFrames';
 
 export interface Waypoint {
   progress: number;
@@ -30,29 +16,58 @@ export interface Waypoint {
 interface ScrollExpansionVideoHeroProps {
   videoSrc?: string;
   posterSrc?: string;
+  manifestSrc?: string;
   waypoints?: Waypoint[];
 }
 
 const DEFAULT_WAYPOINTS: Waypoint[] = [
-  { progress: 0.00, title: 'One ask',          caption: 'A prompt arrives at the orchestrator.' },
-  { progress: 0.33, title: 'Four delegations', caption: 'Specialists are summoned in parallel.' },
-  { progress: 0.66, title: 'Lightning flows',  caption: 'Hashes and prompts stream both ways.' },
-  { progress: 0.95, title: 'Done in seconds',  caption: 'Verified, settled, shipped.' },
+  { progress: 0.00, title: 'One request enters the network', caption: 'A single prompt arrives at the platform core.' },
+  { progress: 0.34, title: 'The platform routes the prompt', caption: 'The orchestrator opens the path to the prompt router.' },
+  { progress: 0.67, title: 'Specialists execute in parallel', caption: 'Vision, parse, write, and verify agents light up together.' },
+  { progress: 0.95, title: 'Settled, verified, connected', caption: 'Sats, receipts, and results move through one shared agent network.' },
 ];
 
 const SECTION_HEIGHT_VH = 250;
+const DEFAULT_MANIFEST_SRC = '/frames/agentmesh-demo/manifest.json';
+const FALLBACK_STILL = '/frames/agentmesh-demo/001.jpg';
 
 export function ScrollExpansionVideoHero({
-  videoSrc = '/videos/agentmesh-demo.mp4',
-  posterSrc,
+  manifestSrc = DEFAULT_MANIFEST_SRC,
   waypoints = DEFAULT_WAYPOINTS,
 }: ScrollExpansionVideoHeroProps) {
   const sectionRef = useRef<HTMLDivElement>(null);
-  const videoRef = useRef<HTMLVideoElement>(null);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const imagesRef = useRef<HTMLImageElement[]>([]);
+  const manifestRef = useRef<FrameManifest | null>(null);
   const [progress, setProgress] = useState(0);
-  const [videoFailed, setVideoFailed] = useState(false);
+  const [manifest, setManifest] = useState<FrameManifest | null>(null);
+  const [framesReady, setFramesReady] = useState(false);
+  const [framesFailed, setFramesFailed] = useState(false);
   const [reducedMotion, setReducedMotion] = useState(false);
   const [lowEnd, setLowEnd] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    setFramesFailed(false);
+
+    fetch(manifestSrc)
+      .then((response) => {
+        if (!response.ok) throw new Error(`Frame manifest failed: ${response.status}`);
+        return response.json() as Promise<FrameManifest>;
+      })
+      .then((nextManifest) => {
+        if (cancelled) return;
+        manifestRef.current = nextManifest;
+        setManifest(nextManifest);
+      })
+      .catch(() => {
+        if (!cancelled) setFramesFailed(true);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [manifestSrc]);
 
   useEffect(() => {
     const rm = window.matchMedia('(prefers-reduced-motion: reduce)');
@@ -69,14 +84,61 @@ export function ScrollExpansionVideoHero({
     return () => rm.removeEventListener('change', update);
   }, []);
 
-  const useStatic = reducedMotion || lowEnd || videoFailed;
+  const useStatic = reducedMotion || lowEnd || framesFailed;
 
   useEffect(() => {
-    if (useStatic) return;
+    if (!manifest || useStatic) return;
+
+    let cancelled = false;
+    let loaded = 0;
+    const images = Array.from({ length: manifest.count }, (_, index) => {
+      const img = new Image();
+      img.decoding = 'async';
+      img.src = frameUrl(manifest.pattern, index);
+      img.onload = () => {
+        if (cancelled) return;
+        loaded += 1;
+        if (loaded >= Math.min(6, manifest.count)) {
+          setFramesReady(true);
+        }
+      };
+      img.onerror = () => {
+        if (!cancelled) setFramesFailed(true);
+      };
+      return img;
+    });
+
+    imagesRef.current = images;
+
+    return () => {
+      cancelled = true;
+      imagesRef.current = [];
+      setFramesReady(false);
+    };
+  }, [manifest, useStatic]);
+
+  useEffect(() => {
+    if (useStatic || !manifest) return;
+
+    const setCanvasSize = () => {
+      const canvas = canvasRef.current;
+      if (!canvas) return false;
+      const rect = canvas.getBoundingClientRect();
+      const dpr = Math.min(window.devicePixelRatio || 1, 2);
+      const width = Math.max(1, Math.round(rect.width * dpr));
+      const height = Math.max(1, Math.round(rect.height * dpr));
+      if (canvas.width !== width || canvas.height !== height) {
+        canvas.width = width;
+        canvas.height = height;
+        return true;
+      }
+      return false;
+    };
 
     let rafId = 0;
     let target = 0;
     let current = 0;
+    let lastDrawn = -1;
 
     const onScroll = () => {
       const section = sectionRef.current;
@@ -89,31 +151,38 @@ export function ScrollExpansionVideoHero({
     };
 
     const tick = () => {
-      current += (target - current) * 0.18;
+      const delta = target - current;
+      current = Math.abs(delta) < 0.001 ? target : current + delta * 0.2;
       setProgress(current);
 
-      const v = videoRef.current;
-      if (v && v.duration && !Number.isNaN(v.duration)) {
-        try {
-          v.currentTime = current * v.duration;
-        } catch {
-          // ignore
+      const canvas = canvasRef.current;
+      const imageIndex = frameIndexForProgress(current, manifest.count);
+      const image = imagesRef.current[imageIndex];
+
+      if (canvas && image && image.complete && image.naturalWidth > 0) {
+        const resized = setCanvasSize();
+        const ctx = canvas.getContext('2d');
+        if (ctx && (resized || imageIndex !== lastDrawn)) {
+          drawImageCover(ctx, image, canvas.width, canvas.height);
+          lastDrawn = imageIndex;
         }
       }
+
       rafId = requestAnimationFrame(tick);
     };
 
+    setCanvasSize();
     onScroll();
     tick();
     window.addEventListener('scroll', onScroll, { passive: true });
-    window.addEventListener('resize', onScroll);
+    window.addEventListener('resize', setCanvasSize);
 
     return () => {
       cancelAnimationFrame(rafId);
       window.removeEventListener('scroll', onScroll);
-      window.removeEventListener('resize', onScroll);
+      window.removeEventListener('resize', setCanvasSize);
     };
-  }, [useStatic]);
+  }, [manifest, useStatic]);
 
   const computeOpacity = (idx: number) => {
     const wp = waypoints[idx];
@@ -142,30 +211,44 @@ export function ScrollExpansionVideoHero({
         : 'sticky top-0 h-screen overflow-hidden'}>
         <div className="relative w-full h-full">
           {!useStatic && (
-            <video
-              ref={videoRef}
-              src={videoSrc}
-              poster={posterSrc}
+            <canvas
+              ref={canvasRef}
               className="absolute inset-0 w-full h-full object-cover bg-black"
-              preload="auto"
-              muted
-              playsInline
-              onError={() => setVideoFailed(true)}
+              aria-hidden
+            />
+          )}
+
+          {!useStatic && !framesReady && (
+            <img
+              src={FALLBACK_STILL}
+              alt=""
+              className="absolute inset-0 w-full h-full object-cover bg-black"
               aria-hidden
             />
           )}
 
           {useStatic && (
-            <div
-              className="absolute inset-0 pointer-events-none"
-              style={{
-                background:
-                  'radial-gradient(ellipse at 30% 20%, hsl(205 90% 68% / 0.18), transparent 50%),' +
-                  'radial-gradient(ellipse at 70% 80%, hsl(205 90% 68% / 0.12), transparent 55%),' +
-                  'linear-gradient(180deg, hsl(0 0% 5%), hsl(0 0% 3%))',
-              }}
-              aria-hidden
-            />
+            <>
+              <img
+                src={FALLBACK_STILL}
+                alt=""
+                className="absolute inset-0 w-full h-full object-cover bg-black"
+                aria-hidden
+                onError={(event) => {
+                  event.currentTarget.style.display = 'none';
+                }}
+              />
+              <div
+                className="absolute inset-0 pointer-events-none"
+                style={{
+                  background:
+                    'radial-gradient(ellipse at 30% 20%, hsl(205 90% 68% / 0.18), transparent 50%),' +
+                    'radial-gradient(ellipse at 70% 80%, hsl(205 90% 68% / 0.12), transparent 55%),' +
+                    'linear-gradient(180deg, hsl(0 0% 5%), hsl(0 0% 3%))',
+                }}
+                aria-hidden
+              />
+            </>
           )}
 
           <div
