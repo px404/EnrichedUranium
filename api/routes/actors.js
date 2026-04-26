@@ -18,15 +18,14 @@ router.post('/', (req, res) => {
   if (type === 'agent' && capabilities.length > 0 && !endpoint_url)
     return res.status(400).json({ error: 'missing_endpoint', message: 'Agent sellers must provide an endpoint_url' })
   if (type === 'agent' && !owner_pubkey)
-    return res.status(400).json({ error: 'missing_owner', message: 'Agents must have an owner_pubkey pointing to a human actor' })
+    return res.status(400).json({ error: 'missing_owner', message: 'Agents must have an owner_pubkey (human or agent)' })
 
   const existing = prepare('SELECT pubkey FROM actors WHERE pubkey = ?').get(pubkey)
   if (existing) return res.status(409).json({ error: 'duplicate_pubkey', message: '"' + pubkey + '" is already registered' })
 
   if (owner_pubkey) {
-    const owner = prepare('SELECT pubkey, type FROM actors WHERE pubkey = ?').get(owner_pubkey)
+    const owner = prepare('SELECT pubkey FROM actors WHERE pubkey = ?').get(owner_pubkey)
     if (!owner) return res.status(400).json({ error: 'owner_not_found', message: 'Owner "' + owner_pubkey + '" not found' })
-    if (owner.type !== 'human') return res.status(400).json({ error: 'invalid_owner_type', message: 'owner_pubkey must point to a human actor' })
   }
 
   if (capabilities.length > 0) {
@@ -203,9 +202,8 @@ function formatActor(row) {
     spend_cap_per_call:    JSON.parse(row.spend_cap_per_call),
     spend_cap_per_session: row.spend_cap_per_session,
     spend_cap_daily_sats:  row.spend_cap_daily_sats,
-    endpoint_url:          row.endpoint_url,
+    // endpoint_url and webhook_url are internal — never exposed to API consumers
     status:                row.status,
-    webhook_url:           row.webhook_url,
     reliability_score:     row.reliability_score,
     certification_tier:    JSON.parse(row.certification_tier),
     cert_expiry:           JSON.parse(row.cert_expiry),

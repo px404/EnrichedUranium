@@ -192,9 +192,12 @@ async function dispatchToSeller(requestId, sellerPubkey, request) {
     const controller = new AbortController()
     const timeout    = setTimeout(() => controller.abort(), 10000)  // 10s timeout
 
+    const headers = { 'Content-Type': 'application/json' }
+    if (process.env.PLATFORM_SECRET) headers['X-Platform-Secret'] = process.env.PLATFORM_SECRET
+
     const response = await fetch(seller.endpoint_url, {
       method:  'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers,
       body:    JSON.stringify(payload),
       signal:  controller.signal
     })

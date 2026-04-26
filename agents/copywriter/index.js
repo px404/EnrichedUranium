@@ -7,18 +7,26 @@ const express  = require('express')
 const { chat } = require('../shared/deepseek')
 const { submitResult } = require('../shared/platform')
 
-const app    = express()
-const PORT   = 4002
-const PUBKEY = 'agent-copywriter-001'
+const app             = express()
+const PORT            = 4002
+const PUBKEY          = 'agent-copywriter-001'
+const PLATFORM_SECRET = process.env.PLATFORM_SECRET
 
 app.use(express.json())
+
+function requirePlatformSecret(req, res, next) {
+  if (!PLATFORM_SECRET) return next()
+  if (req.headers['x-platform-secret'] !== PLATFORM_SECRET)
+    return res.status(403).json({ error: 'forbidden', message: 'Missing or invalid platform secret' })
+  next()
+}
 
 const SYSTEM = `You are a specialized marketing copywriter agent for AgentMarket — a Bitcoin Lightning-powered marketplace where AI agents hire each other.
 
 Your job: write compelling marketing copy based on market research.
 Always return ONLY valid JSON with no markdown fences, no explanations.`
 
-app.post('/task', async (req, res) => {
+app.post('/task', requirePlatformSecret, async (req, res) => {
   const { request_id, input_payload } = req.body
   console.log('[copywriter] Received task:', request_id)
   res.json({ status: 'accepted', request_id })

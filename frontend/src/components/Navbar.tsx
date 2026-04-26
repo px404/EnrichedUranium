@@ -1,6 +1,6 @@
 import { Link, NavLink, useNavigate } from 'react-router-dom';
 import { Search, Menu, Zap, Command, Plus } from 'lucide-react';
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { Sats } from '@/components/Sats';
 import { AgentAvatar } from '@/components/AgentAvatar';
 import { MOCK_USER } from '@/lib/mockData';
@@ -18,22 +18,56 @@ import { Sheet, SheetContent, SheetTrigger } from '@/components/ui/sheet';
 import { ModeToggle } from '@/components/ModeToggle';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
+import { useMode } from '@/lib/mode';
+import { getIdentityPubkey, clearIdentityPubkey } from '@/lib/identity';
 
 const navLinks = [
-  { to: '/browse', label: 'Browse Agents' },
+  { to: '/browse',   label: 'Browse Agents' },
   { to: '/session/new', label: 'New Session' },
-  { to: '/sell', label: 'Sell Services' },
+  { to: '/sell',     label: 'Sell Services' },
   { to: '/dashboard', label: 'Dashboard' },
+  { to: '/monitor',  label: 'Monitor' },
+  { to: '/wallets',  label: 'Wallets' },
 ];
 
 export function Navbar() {
   const navigate = useNavigate();
+  const { isLive } = useMode();
   const [q, setQ] = useState('');
   const [open, setOpen] = useState(false);
+  const [identityPubkey, setIdentityPubkeyState] = useState(getIdentityPubkey);
+
+  useEffect(() => {
+    const onStorage = () => setIdentityPubkeyState(getIdentityPubkey());
+    window.addEventListener('storage', onStorage);
+    return () => window.removeEventListener('storage', onStorage);
+  }, []);
+
+  // Re-read identity whenever mode changes to live
+  useEffect(() => {
+    if (isLive) setIdentityPubkeyState(getIdentityPubkey());
+  }, [isLive]);
+
+  const displayName = isLive
+    ? (identityPubkey ? truncateAddr(identityPubkey) : 'Not signed in')
+    : 'Buyer One';
+  const walletBalance = isLive ? null : MOCK_USER.walletBalance;
+  const pubkeyDisplay = isLive ? identityPubkey : MOCK_USER.pubkey;
 
   const submit = (e: React.FormEvent) => {
     e.preventDefault();
     navigate(`/browse?q=${encodeURIComponent(q)}`);
+  };
+
+  const handleSignOut = () => {
+    if (isLive) {
+      clearIdentityPubkey();
+      setIdentityPubkeyState('');
+      toast({ title: 'Signed out' });
+    } else {
+      toast({ title: 'Signed out', description: 'You have been signed out.' });
+    }
+    navigate('/');
   };
 
   return (
@@ -97,25 +131,30 @@ export function Navbar() {
         {/* Mode toggle */}
         <ModeToggle className="hidden md:inline-flex" />
 
-        {/* Wallet pill */}
-        <Link
-          to="/dashboard"
-          className="hidden sm:inline-flex items-center gap-2 px-3 h-9 rounded-md border border-border bg-surface hover:bg-surface-2 transition"
-          aria-label="Wallet balance"
-        >
-          <Sats amount={MOCK_USER.walletBalance} size="md" />
-        </Link>
+        {/* Wallet pill — hidden in live mode (no balance endpoint yet) */}
+        {walletBalance !== null && (
+          <Link
+            to="/dashboard"
+            className="hidden sm:inline-flex items-center gap-2 px-3 h-9 rounded-md border border-border bg-surface hover:bg-surface-2 transition"
+            aria-label="Wallet balance"
+          >
+            <Sats amount={walletBalance} size="md" />
+          </Link>
+        )}
 
         {/* User dropdown */}
         <DropdownMenu>
           <DropdownMenuTrigger className="hidden sm:block focus:outline-none focus:ring-2 focus:ring-ring rounded-lg">
-            <AgentAvatar name="Buyer One" size="sm" />
+            <AgentAvatar name={displayName} size="sm" />
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end" className="w-56">
             <DropdownMenuLabel className="font-normal">
               <div className="flex flex-col gap-0.5">
-                <span className="text-sm font-semibold">Buyer One</span>
-                <span className="text-xs font-mono text-muted-foreground">{truncateAddr(MOCK_USER.pubkey)}</span>
+                <span className="text-sm font-semibold">{displayName}</span>
+                {pubkeyDisplay
+                  ? <span className="text-xs font-mono text-muted-foreground">{truncateAddr(pubkeyDisplay)}</span>
+                  : <span className="text-xs text-muted-foreground">Set pubkey in Dashboard → Settings</span>
+                }
               </div>
             </DropdownMenuLabel>
             <DropdownMenuSeparator />
@@ -125,10 +164,7 @@ export function Navbar() {
             <DropdownMenuSeparator />
             <DropdownMenuItem
               className="text-muted-foreground cursor-pointer"
-              onClick={() => {
-                toast({ title: 'Signed out', description: 'You have been signed out.' });
-                navigate('/');
-              }}
+              onClick={handleSignOut}
             >
               Sign Out
             </DropdownMenuItem>
@@ -171,15 +207,20 @@ export function Navbar() {
                   <span className="text-xs text-muted-foreground uppercase tracking-wider">Mode</span>
                   <ModeToggle />
                 </div>
-                <div className="flex items-center justify-between px-3 py-2 rounded-md bg-warning/10 border border-warning/30">
-                  <span className="text-xs text-muted-foreground">Wallet</span>
-                  <Sats amount={MOCK_USER.walletBalance} />
-                </div>
+                {walletBalance !== null && (
+                  <div className="flex items-center justify-between px-3 py-2 rounded-md bg-warning/10 border border-warning/30">
+                    <span className="text-xs text-muted-foreground">Wallet</span>
+                    <Sats amount={walletBalance} />
+                  </div>
+                )}
                 <div className="flex items-center gap-2 px-3 py-2">
-                  <AgentAvatar name="Buyer One" size="sm" />
+                  <AgentAvatar name={displayName} size="sm" />
                   <div className="flex flex-col min-w-0">
-                    <span className="text-sm font-semibold">Buyer One</span>
-                    <span className="text-[11px] font-mono text-muted-foreground truncate">{truncateAddr(MOCK_USER.pubkey)}</span>
+                    <span className="text-sm font-semibold">{displayName}</span>
+                    {pubkeyDisplay
+                      ? <span className="text-[11px] font-mono text-muted-foreground truncate">{truncateAddr(pubkeyDisplay)}</span>
+                      : <span className="text-[11px] text-muted-foreground">Set pubkey in Dashboard</span>
+                    }
                   </div>
                 </div>
               </div>

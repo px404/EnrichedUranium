@@ -46,7 +46,8 @@ async function mdkRequest(method, path, body) {
     const msg = json.error ? (json.error.message || JSON.stringify(json.error)) : text
     throw new Error('MDK error ' + res.status + ': ' + msg)
   }
-  return json
+  // MDK daemon wraps responses: { success: true, data: { ... } }
+  return json.data ?? json
 }
 
 // ── Public API ────────────────────────────────────────────────────────────────
@@ -60,7 +61,7 @@ async function health() {
 /** Get current wallet balance in sats. */
 async function getBalance() {
   const data = await mdkRequest('GET', '/balance')
-  return data.balance_sats
+  return data.balanceSats ?? data.balance_sats ?? 0
 }
 
 /**
@@ -68,10 +69,12 @@ async function getBalance() {
  * Returns { invoice, payment_hash, expires_at }
  */
 async function createInvoice(amountSats, description = 'AgentMarket payment') {
-  return mdkRequest('POST', '/receive', {
-    amount_sats: amountSats,
-    description
-  })
+  const data = await mdkRequest('POST', '/receive', { amount_sats: amountSats, description })
+  return {
+    invoice:      data.invoice,
+    payment_hash: data.paymentHash ?? data.payment_hash,
+    expires_at:   data.expiresAt   ?? data.expires_at,
+  }
 }
 
 /**
@@ -89,7 +92,8 @@ async function createOffer(description = 'AgentMarket platform') {
 async function pay(destination, amountSats) {
   const body = { destination }
   if (amountSats !== undefined) body.amount_sats = amountSats
-  return mdkRequest('POST', '/send', body)
+  const data = await mdkRequest('POST', '/send', body)
+  return { payment_id: data.paymentId ?? data.payment_id, ...data }
 }
 
 /**
@@ -105,7 +109,7 @@ async function getPayment(paymentId) {
  */
 async function listPayments() {
   const data = await mdkRequest('GET', '/payments')
-  return data.payments || data
+  return data.payments ?? (Array.isArray(data) ? data : [])
 }
 
 /**

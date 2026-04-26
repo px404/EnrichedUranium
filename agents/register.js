@@ -63,6 +63,34 @@ async function main() {
 
   const schemas = [
     {
+      capability_tag: 'campaign-orchestration',
+      display_name:   'Marketing Campaign Orchestration',
+      description:    'Coordinates a full marketing campaign by hiring market-research, copywriting, and social-strategy specialists and assembling their outputs into a final campaign package.',
+      input_schema: {
+        type: 'object',
+        properties: {
+          product_name:         { type: 'string', minLength: 2 },
+          product_description:  { type: 'string', minLength: 10 },
+          target_audience_hint: { type: 'string' }
+        },
+        required: ['product_name', 'product_description']
+      },
+      output_schema: {
+        type: 'object',
+        properties: {
+          product:           { type: 'string' },
+          research:          { type: 'object' },
+          copy:              { type: 'object' },
+          social:            { type: 'object' },
+          assembled_campaign:{ type: 'object' },
+          payments:          { type: 'object' }
+        },
+        required: ['product', 'research', 'copy', 'social', 'assembled_campaign'],
+        'x-consistency-rules': ['assembled_campaign must summarise the research, copy and social fields'],
+        'x-min-content-length': 10
+      }
+    },
+    {
       capability_tag: 'market-research',
       display_name:   'Market Research',
       description:    'Analyzes target audience, competitor landscape, pain points, and market opportunity for a product.',
@@ -177,12 +205,12 @@ async function main() {
       type:                'agent',
       owner_pubkey:        'owner-demo-001',
       display_name:        'Project Manager Agent',
-      capabilities:        [],
-      price_per_call_sats: {},
+      capabilities:        ['campaign-orchestration'],
+      price_per_call_sats: { 'campaign-orchestration': 200 },
       endpoint_url:        'http://localhost:4000/task',
       lightning_address:   offers.pm,
       chain_depth_max:     3,
-      spend_cap_per_session: 500
+      spend_cap_per_session: 300
     },
     {
       pubkey:              'agent-researcher-001',
@@ -190,7 +218,7 @@ async function main() {
       owner_pubkey:        'owner-demo-001',
       display_name:        'Market Research Specialist',
       capabilities:        ['market-research'],
-      price_per_call_sats: { 'market-research': 80 },
+      price_per_call_sats: { 'market-research': 35 },
       endpoint_url:        'http://localhost:4001/task',
       lightning_address:   offers.researcher
     },
@@ -200,7 +228,7 @@ async function main() {
       owner_pubkey:        'owner-demo-001',
       display_name:        'Marketing Copywriter Specialist',
       capabilities:        ['copywriting'],
-      price_per_call_sats: { 'copywriting': 100 },
+      price_per_call_sats: { 'copywriting': 35 },
       endpoint_url:        'http://localhost:4002/task',
       lightning_address:   offers.copywriter
     },
@@ -210,7 +238,7 @@ async function main() {
       owner_pubkey:        'owner-demo-001',
       display_name:        'Social Media Strategy Specialist',
       capabilities:        ['social-strategy'],
-      price_per_call_sats: { 'social-strategy': 80 },
+      price_per_call_sats: { 'social-strategy': 35 },
       endpoint_url:        'http://localhost:4003/task',
       lightning_address:   offers.strategist
     }
@@ -219,24 +247,40 @@ async function main() {
   for (const agent of agents) {
     const r = await api('POST', '/actors', agent)
     ok(agent.pubkey + ' (' + agent.display_name + ')', r)
+    // If already registered, patch the mutable fields so re-runs stay in sync
+    if (r.status === 409) {
+      const patch = await api('PATCH', '/actors/' + agent.pubkey, {
+        capabilities:        agent.capabilities,
+        price_per_call_sats: agent.price_per_call_sats,
+        endpoint_url:        agent.endpoint_url,
+        lightning_address:   agent.lightning_address
+      })
+      if (patch.status >= 200 && patch.status < 300)
+        console.log('    patched:', agent.pubkey)
+    }
   }
 
   // ── 5. Summary ───────────────────────────────────────────────────────────
   console.log('\n=== Registration complete ===')
-  console.log('\nFund PM wallet (port 3457) with at least 300 sats before running the demo.')
-  console.log('PM needs: 80 (research) + 100 (copy) + 80 (social) = 260 sats + Lightning fees\n')
-  console.log('To fund PM wallet, run in a terminal:')
-  console.log('  npx @moneydevkit/agent-wallet@latest receive 500')
-  console.log('  (then pay that invoice from your Lexe wallet)\n')
-  console.log('Then start all agents and trigger the campaign:')
+  console.log('\nWallet funding targets:')
+  console.log('  Platform wallet (port 3456): 200 sats  — escrow reserve')
+  console.log('  PM wallet       (port 3457): 400 sats  — pays 3×60=180 per campaign + fees')
+  console.log('  Researcher      (port 3458): 400 sats  — earns 57 per task (35 price - 5% fee)')
+  console.log('  Copywriter      (port 3459): 400 sats  — earns 57 per task')
+  console.log('  Strategist      (port 3460): 400 sats  — earns 57 per task\n')
+  console.log('Start all agents:')
   console.log('  node agents/pm/index.js')
   console.log('  node agents/market-researcher/index.js')
   console.log('  node agents/copywriter/index.js')
-  console.log('  node agents/social-strategist/index.js')
-  console.log('\n  curl -s -X POST http://localhost:4000/campaign \\')
+  console.log('  node agents/social-strategist/index.js\n')
+  console.log('Trigger a campaign via the marketplace (PM is now a hirable agent):')
+  console.log('  curl -s -X POST http://localhost:3001/requests \\')
   console.log('    -H "Content-Type: application/json" \\')
-  console.log('    -d \'{"product_name":"AgentMarket","product_description":"A machine-to-machine marketplace where AI agents hire other AI agents and pay with Bitcoin Lightning","target_audience_hint":"developers building AI agents and companies deploying autonomous workflows"}\' | node -e "process.stdin.resume();let d=\'\';process.stdin.on(\'data\',c=>d+=c);process.stdin.on(\'end\',()=>console.log(JSON.stringify(JSON.parse(d),null,2)))"')
-  console.log('')
+  console.log('    -d \'{"buyer_pubkey":"owner-demo-001","capability_tag":"campaign-orchestration","input_payload":{"product_name":"AgentMarket","product_description":"A machine-to-machine marketplace where AI agents hire other AI agents and pay with Bitcoin Lightning","target_audience_hint":"developers building AI agents"},"budget_sats":200}\'\n')
+  console.log('Or trigger directly (bypasses marketplace, no payment):')
+  console.log('  curl -s -X POST http://localhost:4000/campaign \\')
+  console.log('    -H "Content-Type: application/json" \\')
+  console.log('    -d \'{"product_name":"AgentMarket","product_description":"A machine-to-machine marketplace where AI agents hire other AI agents and pay with Bitcoin Lightning","target_audience_hint":"developers building AI agents"}\'\n')
 }
 
 main().catch(e => { console.error('\nFATAL:', e.message); process.exit(1) })
