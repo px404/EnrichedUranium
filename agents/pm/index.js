@@ -12,12 +12,20 @@
 const express  = require('express')
 const { chat } = require('../shared/deepseek')
 const { mdkClient, payAndWait } = require('../shared/mdk')
-const { postRequest, pollRequest, selectSeller, getResult } = require('../shared/platform')
+const { postRequest, pollRequest, selectSeller, getResult, submitResult } = require('../shared/platform')
 
 const app    = express()
 const PORT   = 4000
 const PUBKEY = 'agent-pm-001'
 const WALLET = mdkClient(3457)   // PM's own MDK wallet
+const PLATFORM_SECRET = process.env.PLATFORM_SECRET
+
+function requirePlatformSecret(req, res, next) {
+  if (!PLATFORM_SECRET) return next()
+  if (req.headers['x-platform-secret'] !== PLATFORM_SECRET)
+    return res.status(403).json({ error: 'forbidden', message: 'Missing or invalid platform secret' })
+  next()
+}
 
 const SPECIALIST_PUBKEYS = {
   'market-research': 'agent-researcher-001',
@@ -26,15 +34,35 @@ const SPECIALIST_PUBKEYS = {
 }
 
 const BUDGETS = {
-  'market-research': 80,
-  'copywriting':     100,
-  'social-strategy': 80
+  'market-research': 60,
+  'copywriting':     60,
+  'social-strategy': 60
 }
 
 app.use(express.json())
 
 const SYSTEM = `You are AgentMarket's Project Manager agent — you coordinate marketing campaigns by hiring specialist agents (market researcher, copywriter, social media strategist) and assembling their work.
 Always return ONLY valid JSON with no markdown fences, no explanations.`
+
+// ── POST /task  (platform dispatch — campaign-orchestration capability) ────
+app.post('/task', requirePlatformSecret, async (req, res) => {
+  const { request_id, input_payload } = req.body
+  if (!request_id || !input_payload)
+    return res.status(400).json({ error: 'request_id and input_payload are required' })
+
+  const { product_name, product_description, target_audience_hint } = input_payload
+  if (!product_name || !product_description)
+    return res.status(400).json({ error: 'product_name and product_description are required in input_payload' })
+
+  // Acknowledge immediately so the platform doesn't time out
+  res.json({ status: 'accepted', request_id })
+
+  // Run the campaign async, then push the result back to the platform
+  runCampaign({ product_name, product_description, target_audience_hint })
+    .then(result => submitResult(request_id, PUBKEY, result))
+    .then(() => console.log('[PM] Result submitted for request', request_id))
+    .catch(e  => console.error('[PM] Task failed for request', request_id, ':', e.message))
+})
 
 // ── POST /campaign ─────────────────────────────────────────────────────────
 app.post('/campaign', async (req, res) => {
@@ -59,7 +87,7 @@ app.post('/campaign', async (req, res) => {
 async function runCampaign({ product_name, product_description, target_audience_hint }) {
 
   // ── Step 1: Market Research ──────────────────────────────────────────────
-  console.log('\n[PM] Step 1/3 — Hiring Market Researcher (80 sats)')
+  console.log('\n[PM] Step 1/3 — Hiring Market Researcher (60 sats)')
   const researchResult = await hireSpecialist('market-research', {
     product_name,
     product_description,
@@ -68,7 +96,7 @@ async function runCampaign({ product_name, product_description, target_audience_
   console.log('[PM] Research complete:', Object.keys(researchResult.output_payload).join(', '))
 
   // ── Step 2: Copywriting (informed by research) ───────────────────────────
-  console.log('\n[PM] Step 2/3 — Hiring Copywriter (100 sats)')
+  console.log('\n[PM] Step 2/3 — Hiring Copywriter (60 sats)')
   const copyResult = await hireSpecialist('copywriting', {
     product_name,
     product_description,
@@ -77,7 +105,7 @@ async function runCampaign({ product_name, product_description, target_audience_
   console.log('[PM] Copy complete:', Object.keys(copyResult.output_payload).join(', '))
 
   // ── Step 3: Social Strategy (informed by research + copy) ────────────────
-  console.log('\n[PM] Step 3/3 — Hiring Social Strategist (80 sats)')
+  console.log('\n[PM] Step 3/3 — Hiring Social Strategist (60 sats)')
   const socialResult = await hireSpecialist('social-strategy', {
     product_name,
     target_audience: researchResult.output_payload.target_audience,

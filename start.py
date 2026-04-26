@@ -59,10 +59,51 @@ if sys.platform == 'win32':
         pass
 
 # -- Resolve executables ------------------------------------------------------
-# On Windows npm/node are .cmd files; shutil.which returns the full path with
-# the extension, which is required when NOT using shell=True in subprocess.
+# On Windows npm/node/npx are .cmd files; shutil.which returns the full path
+# with the extension, required when NOT using shell=True in subprocess.
 _NODE = shutil.which('node') or 'node'
 _NPM  = shutil.which('npm')  or 'npm'
+_NPX  = shutil.which('npx')  or 'npx'
+
+# -- Wallet daemon configs (mnemonics read from .env) -------------------------
+_HOME = os.path.expanduser('~')
+
+# home_dir is passed as HOME env var to each daemon so it finds its
+# ~/.mdk-wallet/config.json in the right place.
+# Platform wallet lives directly under ~  (so config = ~/.mdk-wallet/config.json)
+# Agent wallets each have an isolated sub-home (e.g. ~/.mdk-pm/.mdk-wallet/config.json)
+_WALLET_CONFIGS = [
+    {
+        'label':    'wallet-platform',
+        'port':     3456,
+        'home_dir': _HOME,
+        'colour':   'api',
+    },
+    {
+        'label':    'wallet-pm',
+        'port':     3457,
+        'home_dir': os.path.join(_HOME, '.mdk-pm'),
+        'colour':   'pm',
+    },
+    {
+        'label':    'wallet-researcher',
+        'port':     3458,
+        'home_dir': os.path.join(_HOME, '.mdk-researcher'),
+        'colour':   'researcher',
+    },
+    {
+        'label':    'wallet-copywriter',
+        'port':     3459,
+        'home_dir': os.path.join(_HOME, '.mdk-copywriter'),
+        'colour':   'copywriter',
+    },
+    {
+        'label':    'wallet-strategist',
+        'port':     3460,
+        'home_dir': os.path.join(_HOME, '.mdk-strategist'),
+        'colour':   'strategist',
+    },
+]
 
 processes = []
 _shutdown_called = False
@@ -153,6 +194,41 @@ def start_process(label, cmd, cwd, extra_env=None):
     return proc
 
 
+def start_wallets():
+    """Start MDK wallet daemons one at a time.
+
+    Starting them sequentially avoids simultaneous LSP connection races that
+    cause 'wallet operation timed out' errors on mainnet.  Each daemon is given
+    up to 60 s to open its port before the next one starts.
+    """
+    for wc in _WALLET_CONFIGS:
+        home_dir = wc['home_dir']
+        cfg_file = os.path.join(home_dir, '.mdk-wallet', 'config.json')
+        if not os.path.exists(cfg_file):
+            warn('{} has no config.json at {} — run: npx @moneydevkit/agent-wallet@latest init'.format(
+                wc['label'], cfg_file))
+            continue
+
+        os.makedirs(os.path.join(home_dir, '.mdk-wallet'), exist_ok=True)
+
+        extra = {
+            'MDK_WALLET_PORT': str(wc['port']),
+            'HOME':            home_dir,
+            'USERPROFILE':     home_dir,  # Windows
+        }
+        launcher('Starting {} on port {}...'.format(wc['label'], wc['port']))
+        start_process(wc['label'],
+                      [_NPX, '@moneydevkit/agent-wallet@latest', 'start'],
+                      ROOT, extra_env=extra)
+
+        up = wait_for_port(wc['port'], timeout=60, label=wc['label'])
+        if up:
+            launcher('{:<22} ready  ->  http://localhost:{}'.format(
+                wc['label'], wc['port']), ok=True)
+        else:
+            warn('{} did not come up — will retry on its own. Continuing...'.format(wc['label']))
+
+
 def register_agents():
     """Run agents/register.js -- idempotent, 409s are ignored."""
     launcher('Registering agents & schemas with the platform...')
@@ -235,6 +311,12 @@ def main():
     print()
 
     # ------------------------------------------------------------------
+    # 0. Wallet daemons (must be up before API and agents)
+    # ------------------------------------------------------------------
+    launcher('Starting MDK wallet daemons...')
+    start_wallets()
+
+    # ------------------------------------------------------------------
     # 1. Backend API
     # ------------------------------------------------------------------
     npm_install(API_DIR, 'api')
@@ -294,9 +376,9 @@ def main():
     launcher('  All services launched!')
     launcher('  Frontend  ->  http://localhost:5173')
     launcher('  API       ->  http://localhost:3001')
+    launcher('  Wallets   ->  ports 3456-3460')
     if not args.no_agents:
         launcher('  Agents    ->  ports 4000-4003')
-        launcher('  NOTE: POST /campaign needs Lightning (stalled)')
     launcher('  Press Ctrl+C to stop everything.')
     launcher('=' * 44)
     print()

@@ -10,6 +10,8 @@ import SessionNew from "./pages/SessionNew.tsx";
 import Dashboard from "./pages/Dashboard.tsx";
 import Sell from "./pages/Sell.tsx";
 import ProfileCreate from "./pages/ProfileCreate.tsx";
+import Wallets from "./pages/Wallets.tsx";
+import Monitor from "./pages/Monitor.tsx";
 import NotFound from "./pages/NotFound.tsx";
 import { ModeProvider } from "@/lib/mode";
 
@@ -31,6 +33,8 @@ const App = () => (
             <Route path="/sell" element={<Sell />} />
             <Route path="/profile/create" element={<ProfileCreate />} />
             <Route path="/profile/edit" element={<ProfileCreate />} />
+            <Route path="/wallets" element={<Wallets />} />
+            <Route path="/monitor" element={<Monitor />} />
             {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}
             <Route path="*" element={<NotFound />} />
           </Routes>

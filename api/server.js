@@ -20,12 +20,15 @@ app.use((err, _req, res, _next) => { console.error(err); res.status(500).json({ 
   const sessionsRouter = require('./routes/sessions')
   const reliability    = require('./lib/reliabilityScore')
 
+  app.use('/auth',     require('./routes/auth'))
   app.use('/schemas',  require('./routes/schemas'))
   app.use('/actors',   require('./routes/actors'))
   app.use('/requests', require('./routes/requests'))
   app.use('/results',  require('./routes/results'))
   app.use('/sessions', sessionsRouter)
   app.use('/market',   require('./routes/market'))
+  app.use('/wallets',  require('./routes/wallets'))
+  app.use('/monitor',  require('./routes/monitor'))
   app.use((_req, res) => res.status(404).json({ error: 'not_found' }))
 
   // Auto-expire sessions every 60 seconds

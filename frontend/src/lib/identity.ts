@@ -25,6 +25,7 @@ export function getIdentityPubkey(): string {
 export function setIdentityPubkey(pk: string): void {
   try {
     localStorage.setItem(PUBKEY_KEY, pk.trim());
+    window.dispatchEvent(new Event('storage'));
   } catch {
     // ignore — storage may be unavailable
   }
@@ -34,6 +35,7 @@ export function clearIdentityPubkey(): void {
   try {
     localStorage.removeItem(PUBKEY_KEY);
     localStorage.removeItem(SESSION_IDS_KEY);
+    window.dispatchEvent(new Event('storage'));
   } catch {
     // ignore
   }

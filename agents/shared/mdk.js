@@ -10,26 +10,28 @@ function mdkClient(port) {
     try {
       const res  = await fetch(base + path, opts)
       const text = await res.text()
-      return JSON.parse(text)
+      const json = JSON.parse(text)
+      // Daemon wraps responses: { success: true, data: { ... } }
+      return json.data ?? json
     } catch (e) {
       throw new Error('MDK daemon on port ' + port + ' unreachable: ' + e.message)
     }
   }
 
   return {
-    balance:      ()            => req('GET',  '/balance'),
-    receive:      (sats, desc)  => req('POST', '/receive', { amount_sats: sats, description: desc }),
-    receiveBolt12:()            => req('POST', '/receive-bolt12', {}),
-    send:         (dest, sats)  => req('POST', '/send', { destination: dest, amount_sats: sats }),
-    payment:      (id)          => req('GET',  '/payment/' + id),
-    payments:     ()            => req('GET',  '/payments')
+    balance:       ()           => req('GET',  '/balance'),
+    receive:       (sats, desc) => req('POST', '/receive', { amount_sats: sats, description: desc }),
+    receiveBolt12: ()           => req('POST', '/receive-bolt12', {}),
+    send:          (dest, sats) => req('POST', '/send', { destination: dest, amount_sats: sats }),
+    payment:       (id)         => req('GET',  '/payment/' + id),
+    payments:      ()           => req('GET',  '/payments')
   }
 }
 
 /** Pay a bolt11 invoice and wait for confirmation */
 async function payAndWait(client, invoice, timeoutMs = 60000) {
   const result  = await client.send(invoice)
-  const payId   = result.payment_id || result.paymentId
+  const payId   = result.paymentId || result.payment_id
   const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {
     const p = await client.payment(payId).catch(() => null)
