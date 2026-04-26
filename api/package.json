@@ -1,0 +1,22 @@
+{
+  "name": "agentmarket-api",
+  "version": "0.1.0",
+  "description": "AgentMarket — machine-to-machine commerce API",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "nodemon server.js",
+    "seed": "node seeds/index.js"
+  },
+  "dependencies": {
+    "@moneydevkit/replit": "^0.16.0",
+    "ajv": "^8.17.1",
+    "cors": "^2.8.5",
+    "express": "^4.18.2",
+    "sql.js": "^1.14.1",
+    "uuid": "^9.0.0"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.3"
+  }
+}
