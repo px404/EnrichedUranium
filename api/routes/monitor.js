@@ -15,6 +15,11 @@ const AGENTS = [
   { pubkey: 'agent-strategist-001', display_name: 'Social Strategist',     wallet: 'strategist', port: 4003, role: 'seller' },
 ]
 
+function parseJsonSafe(v) {
+  if (!v) return null
+  try { return JSON.parse(v) } catch (_) { return null }
+}
+
 // GET /monitor/agents
 router.get('/agents', (req, res) => {
   const agents = AGENTS.map(agent => {
@@ -105,6 +110,60 @@ router.get('/requests', (req, res) => {
   }))
 
   return res.json({ requests: rows, count: rows.length })
+})
+
+// GET /monitor/requests/:id/events?include_chain=true
+//   — chronological backend event trail for one request,
+//     optionally including child (chain_parent_id) requests so the UI can
+//     show what each sub-agent is doing during PM orchestration.
+router.get('/requests/:id/events', (req, res) => {
+  const request = prepare('SELECT id FROM requests WHERE id = ?').get(req.params.id)
+  if (!request) return res.status(404).json({ error: 'not_found', message: 'Request not found' })
+
+  const includeChain = req.query.include_chain === 'true' || req.query.include_chain === '1'
+
+  const ids = [req.params.id]
+  if (includeChain) {
+    const children = prepare('SELECT id FROM requests WHERE chain_parent_id = ?').all(req.params.id)
+    children.forEach(c => ids.push(c.id))
+  }
+
+  const placeholders = ids.map(() => '?').join(',')
+  const events = prepare(`
+    SELECT id, event, actor_pubkey, detail, created_at, request_id
+    FROM transaction_log
+    WHERE request_id IN (${placeholders})
+    ORDER BY created_at ASC, id ASC
+  `).all(...ids).map(e => ({
+    id: e.id,
+    event: e.event,
+    actor_pubkey: e.actor_pubkey,
+    detail: parseJsonSafe(e.detail),
+    created_at: e.created_at,
+    request_id: e.request_id,
+  }))
+
+  return res.json({ request_id: req.params.id, events, count: events.length, include_chain: includeChain })
+})
+
+// POST /monitor/agent-events  { request_id, actor_pubkey, event, detail }
+//   — agents push their own progress hints (LLM start/finish, errors)
+//     into transaction_log so the UI can render them as a live agent log.
+router.post('/agent-events', express.json({ limit: '32kb' }), (req, res) => {
+  const { request_id, actor_pubkey, event, detail } = req.body || {}
+  if (!request_id || !event)
+    return res.status(400).json({ error: 'missing_fields', message: 'request_id and event are required' })
+
+  const exists = prepare('SELECT id FROM requests WHERE id = ?').get(request_id)
+  if (!exists) return res.status(404).json({ error: 'request_not_found' })
+
+  const id = 'evt_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 8)
+  prepare(`
+    INSERT INTO transaction_log (id, request_id, event, actor_pubkey, detail, created_at)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `).run(id, request_id, event, actor_pubkey || null, JSON.stringify(detail || {}), Math.floor(Date.now() / 1000))
+
+  return res.status(201).json({ id })
 })
 
 module.exports = router

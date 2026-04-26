@@ -5,8 +5,18 @@
 const DEEPSEEK_API_KEY = process.env.DEEPSEEK_API_KEY
 const BASE_URL         = 'https://api.deepseek.com'
 
-async function chat(systemPrompt, userContent, temperature = 0.7) {
+async function chat(systemPrompt, userContent, temperature = 0.7, maxTokens) {
   if (!DEEPSEEK_API_KEY) throw new Error('DEEPSEEK_API_KEY env var not set')
+
+  const body = {
+    model:       'deepseek-chat',
+    temperature,
+    messages: [
+      { role: 'system', content: systemPrompt },
+      { role: 'user',   content: userContent  }
+    ]
+  }
+  if (maxTokens) body.max_tokens = maxTokens
 
   const res = await fetch(BASE_URL + '/chat/completions', {
     method:  'POST',
@@ -14,14 +24,7 @@ async function chat(systemPrompt, userContent, temperature = 0.7) {
       'Authorization': 'Bearer ' + DEEPSEEK_API_KEY,
       'Content-Type':  'application/json'
     },
-    body: JSON.stringify({
-      model:       'deepseek-chat',
-      temperature,
-      messages: [
-        { role: 'system', content: systemPrompt },
-        { role: 'user',   content: userContent  }
-      ]
-    })
+    body: JSON.stringify(body)
   })
 
   if (!res.ok) {

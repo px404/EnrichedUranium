@@ -22,14 +22,31 @@ function bytesToHex(bytes: ArrayBuffer): string {
 }
 
 export async function generateKeypair(): Promise<StoredKeypair> {
-  const keypair = await crypto.subtle.generateKey(
-    { name: 'Ed25519' } as EcKeyGenParams,
-    true,
-    ['sign', 'verify'],
-  )
-  const pubkeyHex    = bytesToHex(await crypto.subtle.exportKey('raw', keypair.publicKey))
-  const privateKeyJwk = await crypto.subtle.exportKey('jwk', keypair.privateKey)
-  const stored: StoredKeypair = { pubkeyHex, privateKeyJwk }
+  // Prefer Ed25519 via Web Crypto (requires secure context: HTTPS or localhost).
+  // Fall back to crypto.getRandomValues() which works on plain http:// too.
+  if (crypto.subtle) {
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const keypair = await (crypto.subtle.generateKey as any)(
+        'Ed25519', true, ['sign', 'verify'],
+      ) as CryptoKeyPair
+      const pubkeyHex     = bytesToHex(await crypto.subtle.exportKey('raw', keypair.publicKey))
+      const privateKeyJwk = await crypto.subtle.exportKey('jwk', keypair.privateKey)
+      const stored: StoredKeypair = { pubkeyHex, privateKeyJwk }
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(stored))
+      return stored
+    } catch {
+      // Fall through to random-bytes fallback below
+    }
+  }
+
+  // Fallback: 32 random bytes as the pubkey (no private key — signing not supported).
+  // Works on plain http:// where crypto.subtle is unavailable.
+  const bytes = new Uint8Array(32)
+  crypto.getRandomValues(bytes)
+  const pubkeyHex = bytesToHex(bytes.buffer)
+  // Store a placeholder JWK so callers always get a consistent shape
+  const stored: StoredKeypair = { pubkeyHex, privateKeyJwk: {} }
   localStorage.setItem(STORAGE_KEY, JSON.stringify(stored))
   return stored
 }

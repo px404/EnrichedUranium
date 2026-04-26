@@ -8,7 +8,7 @@
 
 const express  = require('express')
 const { chat } = require('../shared/deepseek')
-const { submitResult } = require('../shared/platform')
+const { submitResult, discoverSchema, logAgentEvent } = require('../shared/platform')
 
 const app             = express()
 const PORT            = 4001
@@ -31,31 +31,43 @@ Always return ONLY valid JSON with no markdown fences, no explanations.`
 
 app.post('/task', requirePlatformSecret, async (req, res) => {
   const { request_id, input_payload, result_url } = req.body
-  console.log('[researcher] Received task:', request_id, '— input:', JSON.stringify(input_payload).slice(0, 80))
-
-  // Acknowledge immediately so platform knows we received it
+  const received = Object.keys(input_payload || {}).join(', ')
+  console.log('[researcher] Task received:', request_id)
+  console.log('[researcher]   Input fields:', received)
   res.json({ status: 'accepted', request_id })
 
-  // Process async
+  logAgentEvent(request_id, PUBKEY, 'agent_task_accepted',
+    { agent: 'market-researcher', input_fields: received, product: input_payload?.product_name })
+
   try {
+    logAgentEvent(request_id, PUBKEY, 'agent_thinking',
+      { agent: 'market-researcher', model: 'deepseek-chat', max_tokens: 350,
+        prompt_summary: `Conducting concise market research for "${input_payload.product_name}"` })
+
+    const t0 = Date.now()
     const output = await chat(SYSTEM,
-      `Conduct market research for this product and return JSON with exactly these fields:
+      `Conduct concise market research and return JSON with exactly these fields. Keep every text field to ONE short sentence (40-80 chars). No fluff.
 {
-  "target_audience": "detailed description of who would use this (2-3 sentences)",
-  "competitor_landscape": "key competitors and their positioning (2-3 sentences)",
-  "key_pain_points": ["pain point 1", "pain point 2", "pain point 3"],
-  "market_opportunity": "why now and what gap this fills (2-3 sentences)"
+  "target_audience": "one short sentence describing who uses this",
+  "competitor_landscape": "one short sentence on top 1-2 competitors",
+  "key_pain_points": ["pain 1 (short phrase)", "pain 2 (short phrase)"],
+  "market_opportunity": "one short sentence on the opening gap"
 }
 
 Product: ${input_payload.product_name}
 Description: ${input_payload.product_description}
-Audience hint: ${input_payload.target_audience_hint || 'not specified'}`)
+Audience hint: ${input_payload.target_audience_hint || 'not specified'}`,
+      0.5, 350)
+
+    logAgentEvent(request_id, PUBKEY, 'agent_responded',
+      { agent: 'market-researcher', took_ms: Date.now() - t0,
+        preview: JSON.stringify(output).slice(0, 280) })
 
     await submitResult(request_id, PUBKEY, output)
     console.log('[researcher] Result submitted for', request_id)
   } catch (e) {
     console.error('[researcher] Error processing task:', e.message)
-    // Submit error result so platform can settle
+    logAgentEvent(request_id, PUBKEY, 'agent_error', { agent: 'market-researcher', error: e.message })
     await submitResult(request_id, PUBKEY, {
       target_audience:      'Research failed: ' + e.message,
       competitor_landscape: 'N/A',
@@ -67,4 +79,12 @@ Audience hint: ${input_payload.target_audience_hint || 'not specified'}`)
 
 app.get('/health', (_req, res) => res.json({ status: 'ok', agent: PUBKEY, port: PORT }))
 
-app.listen(PORT, () => console.log('[researcher] Listening on http://localhost:' + PORT))
+app.listen(PORT, () => {
+  console.log('[researcher] Listening on http://localhost:' + PORT)
+  // Announce schema on startup so other agents know what we accept
+  discoverSchema('market-research').then(s => {
+    if (!s) return
+    console.log('[researcher] Schema loaded — accepts:', Object.keys(s.input_schema.properties || {}).join(', '))
+    console.log('[researcher] Schema loaded — returns:', Object.keys(s.output_schema.properties || {}).join(', '))
+  }).catch(() => {})
+})

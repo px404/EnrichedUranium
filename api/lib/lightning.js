@@ -113,18 +113,26 @@ async function listPayments() {
 }
 
 /**
- * Poll until an invoice (identified by payment_hash) is paid or times out.
+ * Poll until an inbound invoice (identified by payment_hash) is paid or times out.
+ *
+ * MDK's /payment/:id endpoint is oriented around outgoing payments, while
+ * received invoice settlements are exposed through /payments as inbound entries
+ * with paymentHash/payment_hash. We therefore poll the payments list.
  *
  * @param {string} paymentHash   - from createInvoice()
  * @param {number} timeoutMs     - how long to wait (default: 30 min)
  * @param {number} intervalMs    - poll interval (default: 5s)
- * @returns {Promise<object>}    - final payment record
+ * @returns {Promise<object>}    - final inbound payment record
  * @throws if timed out or payment failed
  */
 async function waitForPayment(paymentHash, timeoutMs = 30 * 60 * 1000, intervalMs = 5000) {
   const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {
-    const payment = await getPayment(paymentHash).catch(() => null)
+    const payments = await listPayments().catch(() => [])
+    const payment = payments.find(p => {
+      const hash = p.paymentHash ?? p.payment_hash
+      return hash === paymentHash
+    })
     if (payment) {
       if (payment.status === 'completed') return payment
       if (payment.status === 'failed')

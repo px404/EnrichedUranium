@@ -1,0 +1,49 @@
+hi everyone! i'm a PM on the spiral team and i've recently been spending some time playing with agentic payments stuff, i'll share a few examples of things i've built and how i've built them. hope these experiments will inspire you 🙂
+the first is https://origram.xyz/ - a service that lets an agent pay a small amount of bitcoin (via L402) to post an image publicly with a comment. agents can even "tip" images they like. "instagram for agents" was the idea. why would agents want to share images?? i'm not sure there's a good business case, but it was fun to build and allowed me to test out the pieces of the stack: giving agents a bitcoin lightning wallets to pay for things (using MDK's agent-wallet) and creating paid API endpoints (with good skill documentation) using MDK's L402 capabilities. i built this one entirely in replit.
+origram
+Bot-friendly photo sharing, powered by bitcoin.
+the next is a service called https://clank.money/ that allows an agents to register a "human bitcoin address" (which encodes bitcoin payments instructions into a human-readable address like name@clank.money) in exchange for some bitcoin. so you could simply ask your agent to visit clank.money to get an HBA and if it is equipped with a bitcoin wallet it will figure out that it needs to pay ₿999 and will make the payment via L402 again. again i used MDK's stuff for the bitcoin plumbing, and built this one with codex and cloudflare as the DNS backend.
+
+i've also had some fun using the universe of agentic shopping services the MDK team has spun up. for instance, i pointed my agent at https://unhuman.coffee/ and asked it to buy me coffee, which was easy to do and a couple weeks later coffee beans arrived at my door (here in canada!) they also have a bunch of other interesting services like https://unhumans.shopping/ and  https://unhuman.design/ and more, i think these are really interesting and point the way forward for how we humans will get stuff done on the internet with the help of our agents
+these are just example/ideas
+
+but i do think it's really fascinating to try to imagine what agents will want to (need to?) pay for once they're unleashed en masse to get stuff done for us. 
+
+can't wait to see what you all build. 
+
+i'll be around here all day, happy to answer questions and cheer you on
+matbalez — Yesterday at 7:35 PM
+Another resource worth checking out is https://402index.io/
+
+This site indexes over 20K paid endpoints across different “payment required” protocols. Will give you a sense of what the current agentic economy looks like right now
+
+Coinbase is the primary proponent behind x402, and last week they put out this directory   https://agentic.market/
+
+And relatedly they have this https://docs.cdp.coinbase.com/x402/bazaar
+
+For anyone who missed it in the other channel, if you are doing the Spiral challenge, you can use use this simple example to make a paid API that's agent accessible with moneydevkit. 
+
+You can give your agent a wallet to interact with the API as well. If you are new to bitcoin, I recommend getting CashApp if you are in the US, or Strike if you are in another supported country. Otherwise, download Phoenix from the app store and get somebody to send you some coins. https://docs.moneydevkit.com/agent-wallet
+
+Note on agent wallet: you don't need to be doing fancy stuff like using OpenClaw or Hermes to use agent wallet. You can also just ask Claude Code or Codex to run the agent wallet for you. It can just run the wallet on your dev laptop.
+
+https://coinos.io/ is pretty good for a wallet as well, super simple no setup required
+cashapp and strike requrie ur info, this one doesn't
+
+@ETEENSMASH note there are good wallets for humans and then there are good wallets for agents. i have personally used MDK and Lexe for AI agents and they work well for that.
+
+Like Stephen said above, if you’re looking to get some btc to test for our stack, you can tell Claude to install https://docs.moneydevkit.com/agent-wallet and he should be able to do everything for you
+
+
+
+
+
+
+
+
+
+
+
+
+
+

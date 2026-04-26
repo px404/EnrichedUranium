@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
-import { ChevronLeft, Send, Zap, Clock, CheckCircle2, TrendingUp, Calendar, Code2, ChevronDown, Wrench, Shield, AlertTriangle, Loader2 } from 'lucide-react';
+import { ChevronLeft, Send, Zap, Clock, CheckCircle2, TrendingUp, Calendar, Code2, ChevronDown, Wrench, Shield, AlertTriangle, Loader2, Copy, Check } from 'lucide-react';
 import { Layout } from '@/components/Layout';
 import { AgentAvatar } from '@/components/AgentAvatar';
 import { CertificationBadge } from '@/components/CertificationBadge';
@@ -17,7 +17,18 @@ import { getAgent, getReviews } from '@/lib/mockData';
 import { hashHue, ratingColor, relativeDate, truncateAddr } from '@/lib/format';
 import { toast } from '@/hooks/use-toast';
 import { useMode } from '@/lib/mode';
+import { api } from '@/lib/api';
+import { cn } from '@/lib/utils';
 import type { Agent, Review } from '@/lib/types';
+
+type CapabilitySchema = {
+  capability_tag: string;
+  display_name: string;
+  description: string;
+  input_schema: Record<string, unknown>;
+  output_schema: Record<string, unknown>;
+  strength_score: number;
+};
 
 const AgentProfile = () => {
   const { agentId = '' } = useParams();
@@ -27,6 +38,7 @@ const AgentProfile = () => {
   const [loading, setLoading] = useState(true);
   const [reviewFilter, setReviewFilter] = useState<'all' | '5' | '4' | 'low'>('all');
   const [testOpen, setTestOpen] = useState(false);
+  const [capSchemas, setCapSchemas] = useState<CapabilitySchema[]>([]);
   const [testInput, setTestInput] = useState('');
   const [testRunning, setTestRunning] = useState(false);
   const [testOutput, setTestOutput] = useState<string | null>(null);
@@ -60,6 +72,14 @@ const AgentProfile = () => {
       setLoading(false);
     });
   }, [agentId, mode]);
+
+  // Load capability schemas in live mode
+  useEffect(() => {
+    if (!isLive || !agentId) return;
+    api.getActorSchemas(agentId)
+      .then(d => setCapSchemas(d.capabilities))
+      .catch(() => setCapSchemas([]));
+  }, [agentId, isLive]);
 
   if (loading) {
     return (
@@ -174,7 +194,7 @@ const AgentProfile = () => {
           <TabsList className="bg-surface border border-border">
             <TabsTrigger value="overview">Overview</TabsTrigger>
             <TabsTrigger value="reviews">Reviews ({reviews.length})</TabsTrigger>
-            <TabsTrigger value="methods">Methods & Tools</TabsTrigger>
+            {!isLive && <TabsTrigger value="methods">Methods & Tools</TabsTrigger>}
           </TabsList>
 
           {/* OVERVIEW */}
@@ -220,9 +240,23 @@ const AgentProfile = () => {
                 </div>
               </Section>
 
-              <Section title="Input / Output Schema">
-                <SchemaViewer label="Input" schema={agent.inputSchema} />
-                <SchemaViewer label="Output" schema={agent.outputSchema} className="mt-3" />
+              <Section title="Capabilities & Schemas" icon={<Code2 className="h-4 w-4" />}>
+                {isLive ? (
+                  capSchemas.length === 0 ? (
+                    <p className="text-sm text-muted-foreground">No capabilities registered.</p>
+                  ) : (
+                    <div className="space-y-4">
+                      {capSchemas.map(cap => (
+                        <CapabilityBlock key={cap.capability_tag} cap={cap} agentId={agentId} />
+                      ))}
+                    </div>
+                  )
+                ) : (
+                  <>
+                    <SchemaViewerLegacy label="Input"  schema={agent.inputSchema} />
+                    <SchemaViewerLegacy label="Output" schema={agent.outputSchema} className="mt-3" />
+                  </>
+                )}
               </Section>
             </div>
 
@@ -414,7 +448,8 @@ function ModeCard({ enabled, title, desc }: { enabled: boolean; title: string; d
   );
 }
 
-function SchemaViewer({ label, schema, className = '' }: { label: string; schema: Record<string, string>; className?: string }) {
+// ── Legacy mock-data schema viewer ──────────────────────────────────────────
+function SchemaViewerLegacy({ label, schema, className = '' }: { label: string; schema: Record<string, string>; className?: string }) {
   const [open, setOpen] = useState(true);
   return (
     <div className={`rounded-lg border border-border bg-surface-2 overflow-hidden ${className}`}>
@@ -436,6 +471,152 @@ function SchemaViewer({ label, schema, className = '' }: { label: string; schema
             </div>
           ))}
           <span className="text-muted-foreground">{`}`}</span>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Live JSON Schema components ──────────────────────────────────────────────
+
+type SchemaProperty = {
+  type?: string;
+  description?: string;
+  minLength?: number;
+  minItems?: number;
+  enum?: string[];
+  items?: Record<string, unknown>;
+  properties?: Record<string, SchemaProperty>;
+};
+
+function typeColor(t: string) {
+  if (t === 'string') return 'bg-blue-500/15 text-blue-400 border-blue-500/20';
+  if (t === 'object') return 'bg-purple-500/15 text-purple-400 border-purple-500/20';
+  if (t === 'array')  return 'bg-orange-500/15 text-orange-400 border-orange-500/20';
+  if (t === 'number' || t === 'integer') return 'bg-green-500/15 text-green-400 border-green-500/20';
+  return 'bg-muted/50 text-muted-foreground border-border';
+}
+
+function SchemaFieldList({ schema }: { schema: Record<string, unknown> }) {
+  const props = (schema.properties ?? {}) as Record<string, SchemaProperty>;
+  const required = new Set((schema.required ?? []) as string[]);
+  const entries = Object.entries(props);
+  if (entries.length === 0) return <p className="text-xs text-muted-foreground italic">No properties defined</p>;
+  return (
+    <div className="space-y-2">
+      {entries.map(([name, def]) => (
+        <div key={name} className="flex items-start gap-2 font-mono text-xs">
+          <span className="text-primary min-w-[140px] shrink-0">{name}</span>
+          <span className={cn('px-1.5 py-0.5 rounded text-[10px] border shrink-0', typeColor(def.type ?? 'any'))}>
+            {def.type ?? 'any'}{def.minLength ? ` ≥${def.minLength}ch` : ''}{def.minItems ? ` ≥${def.minItems}` : ''}
+          </span>
+          {required.has(name) && (
+            <span className="text-destructive text-[10px] shrink-0">required</span>
+          )}
+          {def.description && (
+            <span className="text-muted-foreground text-[10px] leading-relaxed">{def.description}</span>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function CapabilityBlock({ cap, agentId }: { cap: CapabilitySchema; agentId: string }) {
+  const [open, setOpen] = useState(true);
+  const [copied, setCopied] = useState(false);
+
+  // Build a pretty example payload for the capability
+  const inputProps = ((cap.input_schema.properties ?? {}) as Record<string, SchemaProperty>);
+  const examplePayload: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(inputProps)) {
+    examplePayload[k] = v.type === 'string' ? `<${k}>` : v.type === 'array' ? [] : {};
+  }
+
+  const curlExample = JSON.stringify({
+    buyer_pubkey: '<your-pubkey>',
+    capability_tag: cap.capability_tag,
+    input_payload: examplePayload,
+    budget_sats: 200,
+  }, null, 2);
+
+  const handleCopy = () => {
+    navigator.clipboard.writeText(
+      `curl -X POST http://localhost:3001/requests \\\n  -H "Content-Type: application/json" \\\n  -d '${curlExample}'`
+    ).then(() => { setCopied(true); setTimeout(() => setCopied(false), 2000); }).catch(() => {});
+  };
+
+  return (
+    <div className="rounded-lg border border-border bg-surface-2 overflow-hidden">
+      {/* Capability header */}
+      <button
+        onClick={() => setOpen(o => !o)}
+        className="w-full flex items-center justify-between px-4 py-3 hover:bg-surface-3 transition"
+      >
+        <div className="flex items-center gap-3 text-left">
+          <Code2 className="h-4 w-4 text-primary shrink-0" />
+          <div>
+            <div className="font-mono text-sm text-foreground">{cap.capability_tag}</div>
+            <div className="text-xs text-muted-foreground">{cap.display_name}</div>
+          </div>
+        </div>
+        <div className="flex items-center gap-2">
+          <span className="text-[10px] px-2 py-0.5 rounded-full bg-primary/10 text-primary border border-primary/20 font-mono">
+            score {cap.strength_score}
+          </span>
+          <ChevronDown className={`h-4 w-4 text-muted-foreground transition-transform ${open ? '' : '-rotate-90'}`} />
+        </div>
+      </button>
+
+      {open && (
+        <div className="border-t border-border divide-y divide-border">
+          {/* Description */}
+          {cap.description && (
+            <div className="px-4 py-3">
+              <p className="text-xs text-muted-foreground leading-relaxed">{cap.description}</p>
+            </div>
+          )}
+
+          {/* Input schema */}
+          <div className="px-4 py-3">
+            <div className="text-[10px] uppercase tracking-wider font-semibold text-muted-foreground mb-3 flex items-center gap-1.5">
+              <span className="h-1.5 w-1.5 rounded-full bg-blue-400" /> Input — what this agent accepts
+            </div>
+            <SchemaFieldList schema={cap.input_schema} />
+          </div>
+
+          {/* Output schema */}
+          <div className="px-4 py-3">
+            <div className="text-[10px] uppercase tracking-wider font-semibold text-muted-foreground mb-3 flex items-center gap-1.5">
+              <span className="h-1.5 w-1.5 rounded-full bg-green-400" /> Output — what this agent returns
+            </div>
+            <SchemaFieldList schema={cap.output_schema} />
+          </div>
+
+          {/* API call example */}
+          <div className="px-4 py-3">
+            <div className="flex items-center justify-between mb-2">
+              <div className="text-[10px] uppercase tracking-wider font-semibold text-muted-foreground flex items-center gap-1.5">
+                <span className="h-1.5 w-1.5 rounded-full bg-yellow-400" /> How to call this agent
+              </div>
+              <button
+                onClick={handleCopy}
+                className="inline-flex items-center gap-1 text-[10px] text-muted-foreground hover:text-foreground transition"
+              >
+                {copied ? <Check className="h-3 w-3 text-success" /> : <Copy className="h-3 w-3" />}
+                {copied ? 'Copied' : 'Copy'}
+              </button>
+            </div>
+            <pre className="bg-surface-3 border border-border rounded-md p-3 text-[11px] font-mono text-muted-foreground overflow-x-auto whitespace-pre leading-relaxed">
+{`POST /requests\n`}
+{JSON.stringify({
+  buyer_pubkey: '<your-pubkey>',
+  capability_tag: cap.capability_tag,
+  input_payload: examplePayload,
+  budget_sats: 200,
+}, null, 2)}
+            </pre>
+          </div>
         </div>
       )}
     </div>

@@ -68,40 +68,53 @@ _NPX  = shutil.which('npx')  or 'npx'
 # -- Wallet daemon configs (mnemonics read from .env) -------------------------
 _HOME = os.path.expanduser('~')
 
-# home_dir is passed as HOME env var to each daemon so it finds its
-# ~/.mdk-wallet/config.json in the right place.
-# Platform wallet lives directly under ~  (so config = ~/.mdk-wallet/config.json)
-# Agent wallets each have an isolated sub-home (e.g. ~/.mdk-pm/.mdk-wallet/config.json)
+# Each wallet daemon needs an isolated HOME so its config.json doesn't collide.
+# The mnemonic env var names must match what's in .env (loaded below in main()).
 _WALLET_CONFIGS = [
     {
         'label':    'wallet-platform',
         'port':     3456,
         'home_dir': _HOME,
+        'mnemonic_env': 'PLATFORM_WALLET_MNEMONIC',
         'colour':   'api',
     },
     {
         'label':    'wallet-pm',
         'port':     3457,
         'home_dir': os.path.join(_HOME, '.mdk-pm'),
+        'mnemonic_env': 'PM_WALLET_MNEMONIC',
         'colour':   'pm',
     },
     {
         'label':    'wallet-researcher',
         'port':     3458,
         'home_dir': os.path.join(_HOME, '.mdk-researcher'),
+        'mnemonic_env': 'RESEARCHER_WALLET_MNEMONIC',
         'colour':   'researcher',
     },
     {
         'label':    'wallet-copywriter',
         'port':     3459,
         'home_dir': os.path.join(_HOME, '.mdk-copywriter'),
+        'mnemonic_env': 'COPYWRITER_WALLET_MNEMONIC',
         'colour':   'copywriter',
     },
     {
         'label':    'wallet-strategist',
         'port':     3460,
         'home_dir': os.path.join(_HOME, '.mdk-strategist'),
+        'mnemonic_env': 'STRATEGIST_WALLET_MNEMONIC',
         'colour':   'strategist',
+    },
+    # The "user" wallet represents the human end-user's funds. The dev
+    # auto-pay button in SessionNew uses this wallet to settle platform-issued
+    # parent invoices, so the PM never pays for the user's own request.
+    {
+        'label':    'wallet-user',
+        'port':     3461,
+        'home_dir': os.path.join(_HOME, '.mdk-user'),
+        'mnemonic_env': 'USER_WALLET_MNEMONIC',
+        'colour':   'launcher',
     },
 ]
 
@@ -194,8 +207,52 @@ def start_process(label, cmd, cwd, extra_env=None):
     return proc
 
 
+def init_wallet(wc):
+    """Run 'npx @moneydevkit/agent-wallet init' for a wallet that has no config.json yet.
+
+    Reads the mnemonic from the env var named in wc['mnemonic_env'].
+    Returns True if init succeeded or config already exists, False otherwise.
+    """
+    home_dir = wc['home_dir']
+    cfg_file = os.path.join(home_dir, '.mdk-wallet', 'config.json')
+    if os.path.exists(cfg_file):
+        return True
+
+    mnemonic = os.environ.get(wc.get('mnemonic_env', ''), '').strip()
+    if not mnemonic:
+        warn('{}: no mnemonic found in env var {} — skipping init'.format(
+            wc['label'], wc.get('mnemonic_env', '(unset)')))
+        return False
+
+    os.makedirs(os.path.join(home_dir, '.mdk-wallet'), exist_ok=True)
+    launcher('Initialising {} (first run — creating config.json)...'.format(wc['label']))
+
+    extra = {
+        'MDK_WALLET_MNEMONIC': mnemonic,
+        'MDK_WALLET_PORT':     str(wc['port']),
+        'HOME':                home_dir,
+        'USERPROFILE':         home_dir,
+    }
+    env = dict(os.environ)
+    env.update(extra)
+
+    result = subprocess.run(
+        [_NPX, '@moneydevkit/agent-wallet@latest', 'init'],
+        cwd=ROOT, env=env,
+        capture_output=True, text=True, timeout=60,
+    )
+    if result.returncode != 0:
+        warn('{} init failed (exit {}): {}'.format(
+            wc['label'], result.returncode,
+            (result.stderr or result.stdout).strip()[:200]))
+        return False
+
+    launcher('{} initialised successfully.'.format(wc['label']), ok=True)
+    return True
+
+
 def start_wallets():
-    """Start MDK wallet daemons one at a time.
+    """Initialise (if needed) then start MDK wallet daemons one at a time.
 
     Starting them sequentially avoids simultaneous LSP connection races that
     cause 'wallet operation timed out' errors on mainnet.  Each daemon is given
@@ -204,10 +261,13 @@ def start_wallets():
     for wc in _WALLET_CONFIGS:
         home_dir = wc['home_dir']
         cfg_file = os.path.join(home_dir, '.mdk-wallet', 'config.json')
+
+        # Auto-init on first run if config.json is missing
         if not os.path.exists(cfg_file):
-            warn('{} has no config.json at {} — run: npx @moneydevkit/agent-wallet@latest init'.format(
-                wc['label'], cfg_file))
-            continue
+            ok = init_wallet(wc)
+            if not ok:
+                warn('{} skipped — could not initialise wallet'.format(wc['label']))
+                continue
 
         os.makedirs(os.path.join(home_dir, '.mdk-wallet'), exist_ok=True)
 
@@ -347,8 +407,7 @@ def main():
         start_process('strategist', [_NODE, 'index.js'],
                       os.path.join(AGENTS_DIR, 'social-strategist'))
 
-        # PM starts fine -- POST /campaign orchestration needs Lightning (stalled)
-        launcher('Starting PM agent on http://localhost:4000 (Lightning stalled)...')
+        launcher('Starting PM agent on http://localhost:4000 ...')
         start_process('pm', [_NODE, 'index.js'], os.path.join(AGENTS_DIR, 'pm'))
 
         time.sleep(1.5)
@@ -376,7 +435,7 @@ def main():
     launcher('  All services launched!')
     launcher('  Frontend  ->  http://localhost:5173')
     launcher('  API       ->  http://localhost:3001')
-    launcher('  Wallets   ->  ports 3456-3460')
+    launcher('  Wallets   ->  ports 3456-3461')
     if not args.no_agents:
         launcher('  Agents    ->  ports 4000-4003')
     launcher('  Press Ctrl+C to stop everything.')

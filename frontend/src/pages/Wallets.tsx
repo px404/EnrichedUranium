@@ -30,11 +30,12 @@ interface Payment {
 }
 
 const WALLET_META: Record<string, { label: string; agent: string; color: string }> = {
-  platform:   { label: 'Platform',         agent: 'Escrow wallet',               color: 'text-primary' },
-  pm:         { label: 'Project Manager',  agent: 'agent-pm-001',                color: 'text-purple-400' },
-  researcher: { label: 'Market Researcher',agent: 'agent-researcher-001',        color: 'text-green-400' },
-  copywriter: { label: 'Copywriter',       agent: 'agent-copywriter-001',        color: 'text-yellow-400' },
-  strategist: { label: 'Social Strategist',agent: 'agent-strategist-001',        color: 'text-pink-400' },
+  platform:   { label: 'Platform',          agent: 'Escrow wallet — holds budgets, releases payouts',     color: 'text-primary'      },
+  user:       { label: 'You (User)',        agent: 'Pays parent invoices to the platform',                color: 'text-sky-400'      },
+  pm:         { label: 'Project Manager',   agent: 'agent-pm-001 — earns from parent jobs, pays specialists', color: 'text-purple-400' },
+  researcher: { label: 'Market Researcher', agent: 'agent-researcher-001',                                color: 'text-green-400'    },
+  copywriter: { label: 'Copywriter',        agent: 'agent-copywriter-001',                                color: 'text-yellow-400'   },
+  strategist: { label: 'Social Strategist', agent: 'agent-strategist-001',                                color: 'text-pink-400'     },
 };
 
 function fmtTime(ts?: number) {
@@ -121,7 +122,7 @@ export default function Wallets() {
           <div>
             <h1 className="text-2xl font-bold">Wallet Dashboard</h1>
             <p className="text-sm text-muted-foreground mt-0.5">
-              {totalOnline}/5 daemons online
+              {totalOnline}/{wallets.length || 6} daemons online
               {lastRefresh && <span className="ml-2">· refreshed {lastRefresh.toLocaleTimeString()}</span>}
             </p>
           </div>
@@ -148,8 +149,8 @@ export default function Wallets() {
         <div className="grid grid-cols-2 md:grid-cols-4 gap-px rounded-xl overflow-hidden bg-border">
           {[
             ['Total balance', <Sats key="s" amount={totalBalance} size="lg" />],
-            ['Daemons online', `${totalOnline} / 5`],
-            ['Buyer wallets', wallets.filter(w => w.role === 'buyer').length],
+            ['Daemons online', `${totalOnline} / ${wallets.length || 6}`],
+            ['Buyer / Agent', wallets.filter(w => w.role === 'buyer' || w.role === 'agent').length],
             ['Seller wallets', wallets.filter(w => w.role === 'seller').length],
           ].map(([label, value], i) => (
             <div key={i} className="bg-surface px-4 py-3">
@@ -189,6 +190,8 @@ export default function Wallets() {
                 <div className={cn(
                   'mt-2 inline-flex items-center gap-1 text-[10px] uppercase tracking-wider rounded-full px-2 py-0.5',
                   w.role === 'buyer'
+                    ? 'bg-sky-500/10 text-sky-400'
+                    : w.role === 'agent'
                     ? 'bg-primary/10 text-primary'
                     : w.role === 'escrow'
                     ? 'bg-warning/10 text-warning'

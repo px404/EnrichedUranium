@@ -51,7 +51,7 @@ export interface Task {
   agentId: string;
   agentName: string;
   taskType: string;
-  status: 'completed' | 'processing' | 'failed' | 'pending';
+  status: 'completed' | 'processing' | 'failed' | 'pending' | 'cancelled' | 'refunded';
   cost: number;
   time: string;
   rating?: number;

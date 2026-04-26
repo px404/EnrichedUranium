@@ -77,14 +77,32 @@ router.post('/', async (req, res) => {
     return res.status(400).json({ error: 'invalid_deadline', message: 'deadline_unix must be in the future' })
 
   const id = uuidv4()
-
-  // ── Generate Lightning invoice (always — no mock fallback) ──────────────
-  const inv = await lightning.createInvoice(budget_sats,
-    'AgentMarket request ' + id + ' (' + capability_tag + ')')
-  const invoice     = inv.invoice
-  const paymentHash = inv.payment_hash
-
   const shortlist = buildShortlist(capability_tag, budget_sats)
+
+  // ── Try Lightning invoice; auto-bypass if MDK daemon unreachable ────────
+  let invoice = null
+  let paymentHash = null
+
+  if (process.env.DEV_BYPASS_PAYMENT !== 'true') {
+    try {
+      const inv = await lightning.createInvoice(budget_sats,
+        'AgentMarket request ' + id + ' (' + capability_tag + ')')
+      invoice     = inv.invoice
+      paymentHash = inv.payment_hash
+    } catch (e) {
+      console.log('[requests] Lightning unavailable (' + e.message.slice(0, 80) + ') — auto-advancing without payment')
+    }
+  } else {
+    console.log('[requests] DEV_BYPASS_PAYMENT=true — skipping Lightning invoice for', id)
+  }
+
+  // ── Determine initial status based on payment availability ───────────────
+  const devBypass     = !invoice
+  const initialStatus = devBypass
+    ? (shortlist.length > 0 ? 'matched' : 'funded')
+    : 'pending_payment'
+  const fundedAt  = devBypass ? now  : null
+  const matchedAt = devBypass && shortlist.length > 0 ? now : null
 
   prepare(`INSERT INTO requests
     (id, buyer_pubkey, capability_tag, input_payload, budget_sats, status,
@@ -93,19 +111,30 @@ router.post('/', async (req, res) => {
      payment_hash)
     VALUES (?,?,?,?,?,?,?,NULL,?,?,?,?,NULL,0,?,?,?,0,?)`)
     .run(id, buyer_pubkey, capability_tag, JSON.stringify(input_payload), budget_sats,
-      'pending_payment', JSON.stringify(shortlist), deadline, now,
-      null, null, chainParentId, chainDepth, subtasksJson, paymentHash)
+      initialStatus, JSON.stringify(shortlist), deadline, now,
+      fundedAt, matchedAt,
+      chainParentId, chainDepth, subtasksJson, paymentHash)
 
   logEvent(id, 'request_posted', buyer_pubkey, { capability_tag, budget_sats, chain_parent_id: chainParentId })
 
-  // Start background poller — advances to funded -> matched when invoice is paid
-  pollForPayment(id, paymentHash, deadline)
+  if (devBypass) {
+    // Log synthetic funding/matching events so audit log stays consistent
+    logEvent(id, 'request_funded',  buyer_pubkey, { budget_sats, dev_bypass: true })
+    if (shortlist.length > 0)
+      logEvent(id, 'request_matched', buyer_pubkey, { shortlist, dev_bypass: true })
+  } else {
+    // Start background poller — advances to funded -> matched when invoice is paid
+    pollForPayment(id, paymentHash, deadline)
+  }
 
   const row = prepare('SELECT * FROM requests WHERE id = ?').get(id)
   const response = formatRequest(row)
-  response.invoice             = invoice
-  response.payment_hash        = paymentHash
-  response.payment_instructions = 'Pay this Lightning invoice to fund the request. Poll GET /requests/' + id + ' to track status.'
+
+  if (invoice) {
+    response.invoice              = invoice
+    response.payment_hash         = paymentHash
+    response.payment_instructions = 'Pay this Lightning invoice to fund the request. Poll GET /requests/' + id + ' to track status.'
+  }
 
   return res.status(201).json(response)
 })
@@ -148,6 +177,34 @@ async function pollForPayment(requestId, paymentHash, deadlineUnix) {
       await settleTimeout(requestId).catch(err => console.error('[payment] Timeout settle error:', err))
     }
   }
+}
+
+/**
+ * Reconcile a pending_payment request against wallet history.
+ * This recovers requests that got stuck after process restarts or missed pollers.
+ */
+async function reconcilePendingPayment(requestId) {
+  const req = prepare('SELECT * FROM requests WHERE id = ?').get(requestId)
+  if (!req || req.status !== 'pending_payment' || !req.payment_hash) return false
+
+  const rows = await lightning.listPayments().catch(() => [])
+  const hit = rows.find(p => {
+    const hash = p.paymentHash ?? p.payment_hash
+    return hash === req.payment_hash
+  })
+  if (!hit || hit.status !== 'completed') return false
+
+  const now       = Math.floor(Date.now() / 1000)
+  const shortlist = buildShortlist(req.capability_tag, req.budget_sats)
+  const newStatus = shortlist.length > 0 ? 'matched' : 'funded'
+
+  prepare('UPDATE requests SET status=?, funded_at=?, matched_at=?, shortlist=? WHERE id=?')
+    .run(newStatus, now, shortlist.length > 0 ? now : null, JSON.stringify(shortlist), requestId)
+  logEvent(requestId, 'request_funded', req.buyer_pubkey, { budget_sats: req.budget_sats, payment_hash: req.payment_hash, reconciled: true })
+  if (shortlist.length > 0) {
+    logEvent(requestId, 'request_matched', req.buyer_pubkey, { shortlist, reconciled: true })
+  }
+  return true
 }
 
 // ── Seller dispatch ────────────────────────────────────────────────────────────
@@ -232,8 +289,8 @@ async function dispatchToSeller(requestId, sellerPubkey, request) {
 // ── GET /requests ──────────────────────────────────────────────────────────────
 router.get('/', (req, res) => {
   const { buyer_pubkey, seller_pubkey, status, chain_parent_id } = req.query
-  if (!buyer_pubkey && !seller_pubkey)
-    return res.status(400).json({ error: 'missing_filter', message: 'Provide at least one of: buyer_pubkey, seller_pubkey' })
+  if (!buyer_pubkey && !seller_pubkey && !chain_parent_id)
+    return res.status(400).json({ error: 'missing_filter', message: 'Provide at least one of: buyer_pubkey, seller_pubkey, chain_parent_id' })
 
   let sql = 'SELECT * FROM requests WHERE 1=1'
   const params = []
@@ -247,9 +304,15 @@ router.get('/', (req, res) => {
 })
 
 // ── GET /requests/:id ──────────────────────────────────────────────────────────
-router.get('/:id', (req, res) => {
-  const request = prepare('SELECT * FROM requests WHERE id = ?').get(req.params.id)
+router.get('/:id', async (req, res) => {
+  let request = prepare('SELECT * FROM requests WHERE id = ?').get(req.params.id)
   if (!request) return res.status(404).json({ error: 'not_found', message: 'Request "' + req.params.id + '" not found' })
+
+  if (request.status === 'pending_payment' && request.payment_hash) {
+    await reconcilePendingPayment(request.id).catch(() => {})
+    request = prepare('SELECT * FROM requests WHERE id = ?').get(req.params.id)
+  }
+
   return res.json(formatRequest(request))
 })
 

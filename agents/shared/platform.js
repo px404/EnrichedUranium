@@ -14,13 +14,15 @@ async function api(method, path, body) {
 }
 
 /** Post a task request and return {id, invoice, payment_hash, shortlist} */
-async function postRequest(buyerPubkey, capabilityTag, inputPayload, budgetSats) {
-  return api('POST', '/requests', {
+async function postRequest(buyerPubkey, capabilityTag, inputPayload, budgetSats, chainParentId) {
+  const body = {
     buyer_pubkey:   buyerPubkey,
     capability_tag: capabilityTag,
     input_payload:  inputPayload,
     budget_sats:    budgetSats
-  })
+  }
+  if (chainParentId) body.chain_parent_id = chainParentId
+  return api('POST', '/requests', body)
 }
 
 /** Poll until request reaches a terminal or target status */
@@ -51,4 +53,58 @@ async function submitResult(requestId, sellerPubkey, outputPayload) {
   return api('POST', '/results/' + requestId, { seller_pubkey: sellerPubkey, output_payload: outputPayload })
 }
 
-module.exports = { postRequest, pollRequest, selectSeller, getResult, submitResult }
+/**
+ * Discover the input/output schema for a capability.
+ * Agents call this before hiring another agent to know exactly what fields to send.
+ * Returns { capability_tag, display_name, input_schema, output_schema } or null on error.
+ */
+async function discoverSchema(capabilityTag) {
+  try {
+    const schema = await api('GET', '/schemas/' + capabilityTag)
+    return {
+      capability_tag: schema.capability_tag,
+      display_name:   schema.display_name,
+      description:    schema.description,
+      input_schema:   typeof schema.input_schema  === 'string' ? JSON.parse(schema.input_schema)  : schema.input_schema,
+      output_schema:  typeof schema.output_schema === 'string' ? JSON.parse(schema.output_schema) : schema.output_schema,
+    }
+  } catch (e) {
+    console.warn('[platform] Could not discover schema for ' + capabilityTag + ':', e.message)
+    return null
+  }
+}
+
+/**
+ * Discover all capabilities for a given agent pubkey.
+ * Agents call this to learn what another agent accepts before deciding to hire them.
+ */
+async function discoverAgentCapabilities(agentPubkey) {
+  try {
+    return await api('GET', '/actors/' + agentPubkey + '/schemas')
+  } catch (e) {
+    console.warn('[platform] Could not discover capabilities for ' + agentPubkey + ':', e.message)
+    return null
+  }
+}
+
+/**
+ * Log an "agent thought" event against a request — fire-and-forget.
+ * The platform stores it in transaction_log so the UI can stream what each
+ * agent is doing in real time (LLM start/finish, accepting tasks, errors…).
+ *
+ * @param {string} requestId    — the request the agent is currently working on
+ * @param {string} actorPubkey  — the agent's pubkey
+ * @param {string} event        — short slug, e.g. 'agent_thinking'
+ * @param {object} detail       — arbitrary JSON payload (kept small)
+ */
+function logAgentEvent(requestId, actorPubkey, event, detail = {}) {
+  if (!requestId || !event) return
+  return api('POST', '/monitor/agent-events', {
+    request_id:   requestId,
+    actor_pubkey: actorPubkey,
+    event,
+    detail,
+  }).catch(() => { /* best-effort, never throw */ })
+}
+
+module.exports = { postRequest, pollRequest, selectSeller, getResult, submitResult, discoverSchema, discoverAgentCapabilities, logAgentEvent }

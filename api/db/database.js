@@ -29,19 +29,20 @@ function save() {
 function initSchema() {
   db.run("CREATE TABLE IF NOT EXISTS schemas (capability_tag TEXT PRIMARY KEY, display_name TEXT NOT NULL, description TEXT NOT NULL, input_schema TEXT NOT NULL, output_schema TEXT NOT NULL, strength_score INTEGER NOT NULL DEFAULT 0, is_platform_template INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL)")
 
-  db.run("CREATE TABLE IF NOT EXISTS actors (pubkey TEXT PRIMARY KEY, type TEXT NOT NULL CHECK (type IN ('agent','human')), owner_pubkey TEXT, display_name TEXT NOT NULL, registered_at INTEGER NOT NULL, capabilities TEXT NOT NULL DEFAULT '[]', price_per_call_sats TEXT NOT NULL DEFAULT '{}', spend_cap_per_call TEXT NOT NULL DEFAULT '{}', spend_cap_per_session INTEGER NOT NULL DEFAULT 10000, spend_cap_daily_sats INTEGER NOT NULL DEFAULT 100000, daily_spend_used INTEGER NOT NULL DEFAULT 0, daily_spend_reset_at INTEGER NOT NULL DEFAULT 0, endpoint_url TEXT, status TEXT NOT NULL DEFAULT 'active', webhook_url TEXT, reliability_score REAL NOT NULL DEFAULT 50.0, certification_tier TEXT NOT NULL DEFAULT '{}', cert_expiry TEXT NOT NULL DEFAULT '{}', chain_depth_max INTEGER NOT NULL DEFAULT 5)")
+  db.run("CREATE TABLE IF NOT EXISTS actors (pubkey TEXT PRIMARY KEY, type TEXT NOT NULL CHECK (type IN ('agent','human')), owner_pubkey TEXT, display_name TEXT NOT NULL, registered_at INTEGER NOT NULL, capabilities TEXT NOT NULL DEFAULT '[]', price_per_call_sats TEXT NOT NULL DEFAULT '{}', spend_cap_per_call TEXT NOT NULL DEFAULT '{}', spend_cap_per_session INTEGER NOT NULL DEFAULT 10000, spend_cap_daily_sats INTEGER NOT NULL DEFAULT 100000, daily_spend_used INTEGER NOT NULL DEFAULT 0, daily_spend_reset_at INTEGER NOT NULL DEFAULT 0, endpoint_url TEXT, status TEXT NOT NULL DEFAULT 'active', webhook_url TEXT, reliability_score REAL NOT NULL DEFAULT 50.0, certification_tier TEXT NOT NULL DEFAULT '{}', cert_expiry TEXT NOT NULL DEFAULT '{}', chain_depth_max INTEGER NOT NULL DEFAULT 5, lightning_address TEXT)")
+  try { db.run("ALTER TABLE actors ADD COLUMN lightning_address TEXT") } catch (_) {}
 
   db.run("CREATE INDEX IF NOT EXISTS idx_actors_type   ON actors(type)")
   db.run("CREATE INDEX IF NOT EXISTS idx_actors_status ON actors(status)")
   db.run("CREATE INDEX IF NOT EXISTS idx_actors_owner  ON actors(owner_pubkey)")
 
-  // Phase 4: chain_parent_id, chain_depth, subtasks, subtasks_completed
-  db.run("CREATE TABLE IF NOT EXISTS requests (id TEXT PRIMARY KEY, buyer_pubkey TEXT NOT NULL, capability_tag TEXT NOT NULL, input_payload TEXT NOT NULL, budget_sats INTEGER NOT NULL, status TEXT NOT NULL DEFAULT 'pending_payment', shortlist TEXT, selected_seller TEXT, deadline_unix INTEGER NOT NULL, created_at INTEGER NOT NULL, funded_at INTEGER, matched_at INTEGER, completed_at INTEGER, retry_count INTEGER NOT NULL DEFAULT 0, platform_fee_sats INTEGER, seller_payout_sats INTEGER, chain_parent_id TEXT, chain_depth INTEGER NOT NULL DEFAULT 0, subtasks TEXT, subtasks_completed INTEGER NOT NULL DEFAULT 0)")
+  db.run("CREATE TABLE IF NOT EXISTS requests (id TEXT PRIMARY KEY, buyer_pubkey TEXT NOT NULL, capability_tag TEXT NOT NULL, input_payload TEXT NOT NULL, budget_sats INTEGER NOT NULL, status TEXT NOT NULL DEFAULT 'pending_payment', shortlist TEXT, selected_seller TEXT, deadline_unix INTEGER NOT NULL, created_at INTEGER NOT NULL, funded_at INTEGER, matched_at INTEGER, completed_at INTEGER, retry_count INTEGER NOT NULL DEFAULT 0, platform_fee_sats INTEGER, seller_payout_sats INTEGER, chain_parent_id TEXT, chain_depth INTEGER NOT NULL DEFAULT 0, subtasks TEXT, subtasks_completed INTEGER NOT NULL DEFAULT 0, payment_hash TEXT)")
 
   try { db.run("ALTER TABLE requests ADD COLUMN chain_parent_id TEXT") }                          catch (_) {}
   try { db.run("ALTER TABLE requests ADD COLUMN chain_depth INTEGER NOT NULL DEFAULT 0") }        catch (_) {}
   try { db.run("ALTER TABLE requests ADD COLUMN subtasks TEXT") }                                 catch (_) {}
   try { db.run("ALTER TABLE requests ADD COLUMN subtasks_completed INTEGER NOT NULL DEFAULT 0") } catch (_) {}
+  try { db.run("ALTER TABLE requests ADD COLUMN payment_hash TEXT") }                             catch (_) {}
 
   db.run("CREATE INDEX IF NOT EXISTS idx_requests_buyer    ON requests(buyer_pubkey)")
   db.run("CREATE INDEX IF NOT EXISTS idx_requests_seller   ON requests(selected_seller)")
@@ -71,16 +72,33 @@ function initSchema() {
   db.run("CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions(expires_unix)")
   db.run("CREATE INDEX IF NOT EXISTS idx_sessions_parent  ON sessions(parent_session_id)")
 
-  // Phase 3: reliability score cache
   db.run("CREATE TABLE IF NOT EXISTS reliability_score_cache (actor_pubkey TEXT NOT NULL, capability_tag TEXT NOT NULL DEFAULT '*', score REAL NOT NULL, delivery_rate REAL NOT NULL DEFAULT 0, schema_pass_rate REAL NOT NULL DEFAULT 0, acceptance_rate REAL NOT NULL DEFAULT 0, response_time_score REAL NOT NULL DEFAULT 0, tasks_in_window INTEGER NOT NULL DEFAULT 0, computed_at INTEGER NOT NULL, PRIMARY KEY (actor_pubkey, capability_tag))")
 
   db.run("CREATE INDEX IF NOT EXISTS idx_relcache_cap ON reliability_score_cache(capability_tag)")
 
-  // Phase 3: bad-faith buyer flags
   db.run("CREATE TABLE IF NOT EXISTS bad_faith_flags (buyer_pubkey TEXT NOT NULL, seller_pubkey TEXT NOT NULL, flagged_at INTEGER NOT NULL, detail TEXT, PRIMARY KEY (buyer_pubkey, seller_pubkey))")
 
   db.run("CREATE INDEX IF NOT EXISTS idx_badfaith_buyer  ON bad_faith_flags(buyer_pubkey)")
   db.run("CREATE INDEX IF NOT EXISTS idx_badfaith_seller ON bad_faith_flags(seller_pubkey)")
+
+  const TEST_PREFIXES = ['p3-', 'p4-', 'sess-']
+  const testActors = query(
+    "SELECT pubkey FROM actors WHERE " +
+    TEST_PREFIXES.map(() => "pubkey LIKE ?").join(' OR '),
+    TEST_PREFIXES.map(p => p + '%')
+  )
+  if (testActors.length > 0) {
+    const pks = testActors.map(r => r.pubkey)
+    const ph  = pks.map(() => '?').join(',')
+    db.run("DELETE FROM reliability_score_cache WHERE actor_pubkey IN (" + ph + ")", pks)
+    db.run("DELETE FROM bad_faith_flags WHERE buyer_pubkey IN (" + ph + ") OR seller_pubkey IN (" + ph + ")", [...pks, ...pks])
+    db.run("DELETE FROM results WHERE seller_pubkey IN (" + ph + ")", pks)
+    db.run("DELETE FROM transaction_log WHERE actor_pubkey IN (" + ph + ")", pks)
+    db.run("DELETE FROM requests WHERE buyer_pubkey IN (" + ph + ") OR selected_seller IN (" + ph + ")", [...pks, ...pks])
+    db.run("DELETE FROM sessions WHERE buyer_pubkey IN (" + ph + ") OR seller_pubkey IN (" + ph + ")", [...pks, ...pks])
+    db.run("DELETE FROM actors WHERE pubkey IN (" + ph + ")", pks)
+    console.log('[db] cleaned up', pks.length, 'test-fixture actor(s):', pks.join(', '))
+  }
 
   save()
 }

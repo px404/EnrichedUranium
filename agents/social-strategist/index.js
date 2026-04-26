@@ -5,7 +5,7 @@
 
 const express  = require('express')
 const { chat } = require('../shared/deepseek')
-const { submitResult } = require('../shared/platform')
+const { submitResult, discoverSchema, logAgentEvent } = require('../shared/platform')
 
 const app             = express()
 const PORT            = 4003
@@ -28,44 +28,54 @@ Always return ONLY valid JSON with no markdown fences, no explanations.`
 
 app.post('/task', requirePlatformSecret, async (req, res) => {
   const { request_id, input_payload } = req.body
-  console.log('[strategist] Received task:', request_id)
+  const received = Object.keys(input_payload || {}).join(', ')
+  console.log('[strategist] Task received:', request_id)
+  console.log('[strategist]   Input fields:', received)
   res.json({ status: 'accepted', request_id })
 
+  logAgentEvent(request_id, PUBKEY, 'agent_task_accepted',
+    { agent: 'social-strategist', input_fields: received, product: input_payload?.product_name })
+
   try {
+    logAgentEvent(request_id, PUBKEY, 'agent_thinking',
+      { agent: 'social-strategist', model: 'deepseek-chat', max_tokens: 400,
+        prompt_summary: `Planning short social rollout for "${input_payload.product_name}"` })
+    const t0 = Date.now()
     const output = await chat(SYSTEM,
-      `Create a social media strategy and return JSON with exactly this structure:
+      `Create a SHORT social strategy. Each post.content ~25-60 chars (must be >=20). posting_schedule: ONE sentence (~30 chars).
+Return JSON with exactly this structure (2 posts is enough):
 {
   "posts": [
     {
       "platform": "Twitter/X",
-      "content": "tweet text under 280 chars",
+      "content": "short tweet, <=120 chars",
       "hashtags": ["tag1", "tag2"],
-      "best_time": "Tuesday 9am UTC"
+      "best_time": "Tue 9am"
     },
     {
       "platform": "LinkedIn",
-      "content": "professional post 100-150 words",
+      "content": "short post, <=120 chars",
       "hashtags": ["tag1", "tag2"],
-      "best_time": "Wednesday 8am UTC"
-    },
-    {
-      "platform": "Product Hunt",
-      "content": "launch tagline and description",
-      "hashtags": ["tag1"],
-      "best_time": "Tuesday 12:01am PST"
+      "best_time": "Wed 8am"
     }
   ],
-  "posting_schedule": "brief week-by-week rollout plan"
+  "posting_schedule": "one short sentence rollout"
 }
 
 Product: ${input_payload.product_name}
 Target audience: ${input_payload.target_audience || 'developers and AI enthusiasts'}
-Copy to work from: ${JSON.stringify(input_payload.copy || {})}`)
+Copy: ${JSON.stringify(input_payload.copy || {}).slice(0, 500)}`,
+      0.5, 400)
+
+    logAgentEvent(request_id, PUBKEY, 'agent_responded',
+      { agent: 'social-strategist', took_ms: Date.now() - t0,
+        preview: JSON.stringify(output).slice(0, 280) })
 
     await submitResult(request_id, PUBKEY, output)
     console.log('[strategist] Result submitted for', request_id)
   } catch (e) {
     console.error('[strategist] Error:', e.message)
+    logAgentEvent(request_id, PUBKEY, 'agent_error', { agent: 'social-strategist', error: e.message })
     await submitResult(request_id, PUBKEY, {
       posts: [
         { platform: 'Twitter/X', content: 'Error: ' + e.message, hashtags: ['AgentMarket'], best_time: 'ASAP' },
@@ -78,4 +88,11 @@ Copy to work from: ${JSON.stringify(input_payload.copy || {})}`)
 
 app.get('/health', (_req, res) => res.json({ status: 'ok', agent: PUBKEY, port: PORT }))
 
-app.listen(PORT, () => console.log('[strategist] Listening on http://localhost:' + PORT))
+app.listen(PORT, () => {
+  console.log('[strategist] Listening on http://localhost:' + PORT)
+  discoverSchema('social-strategy').then(s => {
+    if (!s) return
+    console.log('[strategist] Schema loaded — accepts:', Object.keys(s.input_schema.properties || {}).join(', '))
+    console.log('[strategist] Schema loaded — returns:', Object.keys(s.output_schema.properties || {}).join(', '))
+  }).catch(() => {})
+})

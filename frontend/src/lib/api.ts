@@ -69,6 +69,8 @@ export interface BackendRequest {
     | 'matched'
     | 'in_progress'
     | 'completed'
+    | 'failed'
+    | 'refunded'
     | 'timeout'
     | 'cancelled';
   shortlist: string[];
@@ -165,6 +167,22 @@ export const api = {
       method: 'PATCH',
       body: JSON.stringify(body),
     }),
+
+  /** Returns all capability schemas for an agent — used for agent-to-agent discovery. */
+  getActorSchemas: (pubkey: string) =>
+    apiFetch<{
+      actor_pubkey: string;
+      display_name: string;
+      capability_count: number;
+      capabilities: Array<{
+        capability_tag: string;
+        display_name: string;
+        description: string;
+        input_schema: Record<string, unknown>;
+        output_schema: Record<string, unknown>;
+        strength_score: number;
+      }>;
+    }>(`/actors/${pubkey}/schemas`),
 
   getActorHistory: (
     pubkey: string,

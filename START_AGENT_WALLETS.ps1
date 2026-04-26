@@ -45,9 +45,20 @@ $env:HOME = "$env:USERPROFILE\.mdk-strategist"
 New-Item -ItemType Directory -Force -Path "$env:USERPROFILE\.mdk-strategist\.mdk-wallet" | Out-Null
 npx @moneydevkit/agent-wallet@latest start
 
+# ─── TERMINAL 6 — User Wallet (port 3461) ────────────────────────────────────
+# Represents the human end-user.  Used by the dev "Auto-pay" button so the
+# user can settle parent invoices from inside the app — without an external
+# Lightning wallet, and without making the PM pay for the user's own request.
+$env:MDK_WALLET_MNEMONIC = "hair cross small purpose rally accident lend smooth keep shoe shadow round"
+$env:MDK_WALLET_PORT = "3461"
+$env:HOME = "$env:USERPROFILE\.mdk-user"
+New-Item -ItemType Directory -Force -Path "$env:USERPROFILE\.mdk-user\.mdk-wallet" | Out-Null
+npx @moneydevkit/agent-wallet@latest start
+
 # ─── VERIFY all wallets (run in any terminal after all daemons are up) ────────
-# curl http://localhost:3456/balance   # platform
-# curl http://localhost:3457/balance   # pm
+# curl http://localhost:3456/balance   # platform (escrow)
+# curl http://localhost:3457/balance   # pm       (agent — earns from parent jobs)
 # curl http://localhost:3458/balance   # researcher
 # curl http://localhost:3459/balance   # copywriter
 # curl http://localhost:3460/balance   # strategist
+# curl http://localhost:3461/balance   # user     (the end-user — pays parent invoices)

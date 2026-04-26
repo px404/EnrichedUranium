@@ -41,6 +41,8 @@ const STATUS_STYLE: Record<string, string> = {
   completed:       'bg-success/15 text-success border-success/30',
   in_progress:     'bg-primary/15 text-primary border-primary/30',
   failed:          'bg-destructive/15 text-destructive border-destructive/30',
+  cancelled:       'bg-destructive/10 text-destructive border-destructive/25',
+  refunded:        'bg-warning/15 text-warning border-warning/30',
   pending_payment: 'bg-muted text-muted-foreground border-border',
   funded:          'bg-warning/15 text-warning border-warning/30',
   matched:         'bg-warning/15 text-warning border-warning/30',

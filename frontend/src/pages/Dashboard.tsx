@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState, useCallback } from 'react';
-import { Link } from 'react-router-dom';
-import { Activity, Pause, Play, X, Star, Trash2, Settings as SettingsIcon, RefreshCw, KeyRound } from 'lucide-react';
+import { Link, useSearchParams } from 'react-router-dom';
+import { Activity, Pause, Play, X, Star, Trash2, Settings as SettingsIcon, RefreshCw, KeyRound, Sparkles, Copy, Check, Zap, ExternalLink } from 'lucide-react';
 import { Layout } from '@/components/Layout';
 import { Button } from '@/components/ui/button';
 import { Progress } from '@/components/ui/progress';
@@ -29,6 +29,7 @@ import {
   getStoredSessionIds,
   removeStoredSessionId,
 } from '@/lib/identity';
+import { generateKeypair, getStoredKeypair } from '@/lib/keypair';
 
 type View = 'overview' | 'sessions' | 'history' | 'favorites' | 'settings';
 type SessionState = Session & { status: 'active' | 'paused' | 'expired' };
@@ -51,7 +52,12 @@ const EMPTY_USER = {
 const Dashboard = () => {
   const { requireMock, isLive, pick } = useMode();
   const user = pick(MOCK_USER, EMPTY_USER);
-  const [view, setView] = useState<View>('overview');
+  const [searchParams] = useSearchParams();
+  const [view, setView] = useState<View>(() => {
+    const v = searchParams.get('view');
+    return (v && ['overview','sessions','history','favorites','settings'].includes(v))
+      ? v as View : 'overview';
+  });
   const [balance, setBalance] = useState(user.walletBalance);
   const [topupOpen, setTopupOpen] = useState(false);
   const [topupAmount, setTopupAmount] = useState(10000);
@@ -66,6 +72,13 @@ const Dashboard = () => {
   const [displayName, setDisplayName] = useState(pick('Buyer One', ''));
   const [pubkeyInput, setPubkeyInput] = useState('');
   const [identityPubkey, setIdentityPubkeyState] = useState(getIdentityPubkey);
+  const [generating, setGenerating] = useState(false);
+  const [copied, setCopied] = useState(false);
+  // Live top-up invoice state
+  const [invoiceLoading, setInvoiceLoading] = useState(false);
+  const [invoice, setInvoice] = useState<string | null>(null);
+  const [invoiceCopied, setInvoiceCopied] = useState(false);
+  const [pmBalance, setPmBalance] = useState<number | null>(null);
 
   const tasks = isLive ? liveTasks : MOCK_TASKS;
 
@@ -88,9 +101,16 @@ const Dashboard = () => {
         results.forEach((s, i) => { if (!s) removeStoredSessionId(sessionIds[i]); });
       }
 
-      // Fetch request history
-      const { requests } = await api.getRequests({ buyer_pubkey: pk });
-      setLiveTasks(requests.map(r => backendRequestToTask(r)));
+      // Fetch request history + actor directory so task rows show human-friendly names.
+      const [{ requests }, { actors }] = await Promise.all([
+        api.getRequests({ buyer_pubkey: pk }),
+        api.getActors({ type: 'agent', status: 'active' }),
+      ]);
+      const actorNameByPubkey = new Map(actors.map(a => [a.pubkey, a.display_name]));
+      setLiveTasks(requests.map(r => backendRequestToTask(
+        r,
+        r.selected_seller ? (actorNameByPubkey.get(r.selected_seller) ?? r.selected_seller) : undefined,
+      )));
       setDisplayName(truncateAddr(pk));
     } catch (e) {
       console.error('[dashboard] live fetch error:', e);
@@ -111,7 +131,8 @@ const Dashboard = () => {
     }
     const pk = getIdentityPubkey();
     setIdentityPubkeyState(pk);
-    if (pk) fetchLiveData(pk);
+    if (pk) { ensureActorRegistered(pk); fetchLiveData(pk); }
+    fetchPmBalance();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isLive]);
 
@@ -121,8 +142,98 @@ const Dashboard = () => {
     setIdentityPubkey(pk);
     setIdentityPubkeyState(pk);
     setPubkeyInput('');
+    ensureActorRegistered(pk);
     toast({ title: 'Identity saved', description: truncateAddr(pk) });
     fetchLiveData(pk);
+  };
+
+  /** Register pubkey as a human actor on the platform if not already there. */
+  const ensureActorRegistered = async (pubkeyHex: string) => {
+    try {
+      // Check if already registered
+      const check = await fetch(`http://localhost:3001/actors/${pubkeyHex}`);
+      if (check.ok) return; // already exists
+
+      // Register as a human buyer
+      await fetch('http://localhost:3001/actors', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          pubkey:       pubkeyHex,
+          type:         'human',
+          display_name: `User ${truncateAddr(pubkeyHex)}`,
+        }),
+      });
+    } catch {
+      // Non-fatal — session creation will surface the error if it matters
+    }
+  };
+
+  const generateIdentity = async () => {
+    setGenerating(true);
+    try {
+      const existing = getStoredKeypair();
+      const kp = existing ?? await generateKeypair();
+      setIdentityPubkey(kp.pubkeyHex);
+      setIdentityPubkeyState(kp.pubkeyHex);
+      await ensureActorRegistered(kp.pubkeyHex);
+      toast({
+        title: existing ? 'Existing account loaded' : 'Account created!',
+        description: truncateAddr(kp.pubkeyHex),
+      });
+      fetchLiveData(kp.pubkeyHex);
+    } catch (err) {
+      console.error('[generateIdentity]', err);
+      toast({
+        title: 'Could not generate account',
+        description: String(err instanceof Error ? err.message : err),
+        variant: 'destructive',
+      });
+    } finally {
+      setGenerating(false);
+    }
+  };
+
+  const copyPubkey = async (pk: string) => {
+    await navigator.clipboard.writeText(pk);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
+
+  const fetchPmBalance = useCallback(async () => {
+    try {
+      const r = await fetch('http://localhost:3001/wallets/status');
+      if (!r.ok) return;
+      const d = await r.json();
+      const pm = (d.wallets ?? []).find((w: { name: string }) => w.name === 'pm');
+      if (pm?.online) setPmBalance(pm.balance_sats ?? 0);
+    } catch { /* wallet offline */ }
+  }, []);
+
+  const generateInvoice = async () => {
+    if (topupAmount <= 0) { toast({ title: 'Enter a positive amount', variant: 'destructive' }); return; }
+    setInvoiceLoading(true);
+    setInvoice(null);
+    try {
+      const r = await fetch(
+        `http://localhost:3001/wallets/pm/receive?amount=${topupAmount}&description=AgentMesh+top-up`,
+      );
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.message ?? 'Failed to generate invoice');
+      setInvoice(d.invoice);
+    } catch (err) {
+      toast({ title: 'Could not generate invoice', description: String(err instanceof Error ? err.message : err), variant: 'destructive' });
+    } finally {
+      setInvoiceLoading(false);
+    }
+  };
+
+  const copyInvoice = async () => {
+    if (!invoice) return;
+    await navigator.clipboard.writeText(invoice);
+    setInvoiceCopied(true);
+    setTimeout(() => setInvoiceCopied(false), 2500);
+    toast({ title: 'Invoice copied to clipboard' });
   };
 
   const signOut = () => {
@@ -138,6 +249,8 @@ const Dashboard = () => {
     completed: 'bg-success/15 text-success border-success/30',
     processing: 'bg-primary/15 text-primary border-primary/30',
     failed: 'bg-destructive/15 text-destructive border-destructive/30',
+    cancelled: 'bg-destructive/10 text-destructive border-destructive/25',
+    refunded: 'bg-warning/15 text-warning border-warning/30',
     pending: 'bg-muted text-muted-foreground border-border',
   } as const;
 
@@ -204,14 +317,17 @@ const Dashboard = () => {
                 <span className="inline-block h-1.5 w-1.5 rounded-full bg-success pulse-dot text-success" />
                 {isLive ? 'Protocol balance' : 'Lightning balance'}
               </div>
-              <div className="mt-1"><Sats amount={balance} size="xl" /></div>
-              {isLive ? (
-                <p className="mt-3 text-xs text-muted-foreground">Lightning top-up — coming soon</p>
-              ) : (
-                <Button variant="outline" size="sm" className="mt-3 w-full motion-lift" onClick={() => setTopupOpen(true)}>
-                  Top Up
-                </Button>
-              )}
+              <div className="mt-1">
+                <Sats amount={isLive ? (pmBalance ?? 0) : balance} size="xl" />
+              </div>
+              <Button
+                variant="outline" size="sm"
+                className="mt-3 w-full motion-lift"
+                onClick={() => { setInvoice(null); setTopupOpen(true); }}
+              >
+                <Zap className="h-3.5 w-3.5 mr-1.5" />
+                {isLive ? 'Deposit Sats' : 'Top Up'}
+              </Button>
             </div>
           </div>
           <nav className="panel p-2 text-sm">
@@ -345,7 +461,12 @@ const Dashboard = () => {
                     <>
                       <div>
                         <Label className="text-xs uppercase tracking-wider text-muted-foreground">Current pubkey</Label>
-                        <Input value={identityPubkey} readOnly className="mt-2 font-mono text-xs" />
+                        <div className="flex gap-2 mt-2">
+                          <Input value={identityPubkey} readOnly className="font-mono text-xs flex-1" />
+                          <Button size="sm" variant="outline" onClick={() => copyPubkey(identityPubkey)} title="Copy pubkey">
+                            {copied ? <Check className="h-3.5 w-3.5 text-success" /> : <Copy className="h-3.5 w-3.5" />}
+                          </Button>
+                        </div>
                       </div>
                       <div className="flex gap-2">
                         <Button size="sm" variant="outline" onClick={() => fetchLiveData(identityPubkey)} disabled={liveLoading}>
@@ -357,20 +478,41 @@ const Dashboard = () => {
                     </>
                   ) : (
                     <>
-                      <p className="text-sm text-muted-foreground">
-                        Enter your actor pubkey to load your sessions and task history from the backend.
-                      </p>
+                      {/* ── Quick onboarding: generate a keypair in one click ── */}
+                      <div className="rounded-xl border border-primary/30 bg-primary/5 p-4 space-y-3">
+                        <div className="flex items-start gap-3">
+                          <Sparkles className="h-5 w-5 text-primary mt-0.5 shrink-0" />
+                          <div>
+                            <p className="text-sm font-semibold">Create your account</p>
+                            <p className="text-xs text-muted-foreground mt-0.5">
+                              Generate a secure Ed25519 keypair in your browser. Your private key never leaves this device.
+                            </p>
+                          </div>
+                        </div>
+                        <Button
+                          className="w-full bg-primary hover:bg-primary/90"
+                          onClick={generateIdentity}
+                          disabled={generating}
+                        >
+                          {generating
+                            ? <><RefreshCw className="h-3.5 w-3.5 mr-2 animate-spin" />Generating…</>
+                            : <><Sparkles className="h-3.5 w-3.5 mr-2" />Generate Account</>
+                          }
+                        </Button>
+                      </div>
+
+                      {/* ── Or paste an existing pubkey ── */}
                       <div>
-                        <Label className="text-xs uppercase tracking-wider text-muted-foreground">Your pubkey</Label>
+                        <Label className="text-xs uppercase tracking-wider text-muted-foreground">Or paste an existing pubkey</Label>
                         <div className="flex gap-2 mt-2">
                           <Input
                             value={pubkeyInput}
                             onChange={e => setPubkeyInput(e.target.value)}
                             onKeyDown={e => { if (e.key === 'Enter') saveIdentity(); }}
-                            placeholder="e.g. hex pubkey used when registering"
+                            placeholder="Hex pubkey from a previous session"
                             className="font-mono text-xs"
                           />
-                          <Button onClick={saveIdentity}>Connect</Button>
+                          <Button variant="outline" onClick={saveIdentity}>Connect</Button>
                         </div>
                       </div>
                     </>
@@ -435,28 +577,119 @@ const Dashboard = () => {
         </section>
       </div>
 
-      {/* Top Up dialog — mock mode only */}
-      <Dialog open={topupOpen} onOpenChange={setTopupOpen}>
-        <DialogContent className="bg-surface border-border rounded-xl">
+      {/* Top Up / Deposit dialog */}
+      <Dialog open={topupOpen} onOpenChange={open => { setTopupOpen(open); if (!open) setInvoice(null); }}>
+        <DialogContent className="bg-surface border-border rounded-xl max-w-md">
           <DialogHeader>
-            <DialogTitle>Top Up Wallet</DialogTitle>
-            <DialogDescription>Add sats to your Lightning balance. Mock — no real invoice generated.</DialogDescription>
+            <DialogTitle className="flex items-center gap-2">
+              <Zap className="h-4 w-4 text-primary" />
+              {isLive ? 'Deposit Sats via Lightning' : 'Top Up Wallet'}
+            </DialogTitle>
+            <DialogDescription>
+              {isLive
+                ? 'Generate a Lightning invoice and pay it from any Lightning wallet to top up the buyer balance.'
+                : 'Add sats to your simulated balance for testing.'}
+            </DialogDescription>
           </DialogHeader>
-          <div className="space-y-3">
-            <Label className="text-xs uppercase tracking-wider text-muted-foreground">Amount (sats)</Label>
-            <Input type="number" value={topupAmount} onChange={e => setTopupAmount(+e.target.value)} className="font-mono" />
-            <div className="flex gap-2">
-              {[5000, 10000, 50000, 100000].map(v => (
-                <button key={v} onClick={() => setTopupAmount(v)}
-                  className="flex-1 px-2 py-1.5 text-xs rounded-md border border-border bg-surface-2 hover:border-primary/40 hover:text-primary transition tabular-nums motion-lift">
-                  {v.toLocaleString()}
-                </button>
-              ))}
+
+          {/* Amount picker */}
+          {!invoice && (
+            <div className="space-y-3">
+              <Label className="text-xs uppercase tracking-wider text-muted-foreground">Amount (sats)</Label>
+              <Input
+                type="number" min={1}
+                value={topupAmount}
+                onChange={e => setTopupAmount(+e.target.value)}
+                className="font-mono"
+              />
+              <div className="grid grid-cols-4 gap-2">
+                {[1000, 5000, 10000, 50000].map(v => (
+                  <button key={v} onClick={() => setTopupAmount(v)}
+                    className={cn(
+                      'px-2 py-1.5 text-xs rounded-md border transition tabular-nums',
+                      topupAmount === v
+                        ? 'border-primary/60 bg-primary/10 text-primary'
+                        : 'border-border bg-surface-2 hover:border-primary/40 hover:text-primary',
+                    )}>
+                    {v.toLocaleString()}
+                  </button>
+                ))}
+              </div>
             </div>
-          </div>
+          )}
+
+          {/* Live: show QR + invoice after generation */}
+          {isLive && invoice && (
+            <div className="space-y-4">
+              {/* QR code */}
+              <div className="flex justify-center">
+                <div className="p-3 rounded-xl bg-white border border-border">
+                  <img
+                    src={`https://api.qrserver.com/v1/create-qr-code/?size=220x220&data=LIGHTNING:${invoice.toUpperCase()}&margin=0`}
+                    alt="Lightning invoice QR"
+                    width={220} height={220}
+                    className="block rounded"
+                  />
+                </div>
+              </div>
+
+              {/* Sats label */}
+              <p className="text-center text-sm text-muted-foreground">
+                Scan to pay <span className="font-semibold text-foreground">{topupAmount.toLocaleString()} sats</span> from any Lightning wallet
+              </p>
+
+              {/* Invoice string */}
+              <div className="rounded-lg border border-border bg-surface-2 p-3">
+                <p className="text-[10px] uppercase tracking-wider text-muted-foreground mb-1.5">BOLT11 Invoice</p>
+                <p className="font-mono text-[10px] break-all text-foreground/70 leading-relaxed select-all">
+                  {invoice}
+                </p>
+              </div>
+
+              {/* Actions */}
+              <div className="flex gap-2">
+                <Button className="flex-1 bg-primary hover:bg-primary/90" onClick={copyInvoice}>
+                  {invoiceCopied ? <Check className="h-3.5 w-3.5 mr-1.5" /> : <Copy className="h-3.5 w-3.5 mr-1.5" />}
+                  {invoiceCopied ? 'Copied!' : 'Copy Invoice'}
+                </Button>
+                <Button variant="outline" asChild>
+                  <a href={`lightning:${invoice}`} target="_blank" rel="noreferrer" title="Open in Lightning wallet">
+                    <ExternalLink className="h-3.5 w-3.5" />
+                  </a>
+                </Button>
+              </div>
+
+              <button
+                className="w-full text-xs text-muted-foreground hover:text-foreground transition text-center"
+                onClick={() => setInvoice(null)}
+              >
+                ← Generate a different amount
+              </button>
+            </div>
+          )}
+
           <DialogFooter>
-            <Button variant="outline" onClick={() => setTopupOpen(false)}>Cancel</Button>
-            <Button onClick={confirmTopup} className="bg-primary hover:bg-primary/90">Confirm top-up</Button>
+            {isLive ? (
+              !invoice ? (
+                <>
+                  <Button variant="outline" onClick={() => setTopupOpen(false)}>Cancel</Button>
+                  <Button onClick={generateInvoice} disabled={invoiceLoading} className="bg-primary hover:bg-primary/90">
+                    {invoiceLoading
+                      ? <><RefreshCw className="h-3.5 w-3.5 mr-1.5 animate-spin" />Generating…</>
+                      : <><Zap className="h-3.5 w-3.5 mr-1.5" />Generate Invoice</>}
+                  </Button>
+                </>
+              ) : (
+                <Button variant="outline" className="w-full" onClick={() => { setTopupOpen(false); setInvoice(null); fetchPmBalance(); }}>
+                  Done
+                </Button>
+              )
+            ) : (
+              <>
+                <Button variant="outline" onClick={() => setTopupOpen(false)}>Cancel</Button>
+                <Button onClick={confirmTopup} className="bg-primary hover:bg-primary/90">Confirm top-up</Button>
+              </>
+            )}
           </DialogFooter>
         </DialogContent>
       </Dialog>

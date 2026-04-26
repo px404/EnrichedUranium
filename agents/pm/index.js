@@ -12,7 +12,7 @@
 const express  = require('express')
 const { chat } = require('../shared/deepseek')
 const { mdkClient, payAndWait } = require('../shared/mdk')
-const { postRequest, pollRequest, selectSeller, getResult, submitResult } = require('../shared/platform')
+const { postRequest, pollRequest, selectSeller, getResult, submitResult, discoverSchema, logAgentEvent } = require('../shared/platform')
 
 const app    = express()
 const PORT   = 4000
@@ -57,8 +57,8 @@ app.post('/task', requirePlatformSecret, async (req, res) => {
   // Acknowledge immediately so the platform doesn't time out
   res.json({ status: 'accepted', request_id })
 
-  // Run the campaign async, then push the result back to the platform
-  runCampaign({ product_name, product_description, target_audience_hint })
+  // Run the campaign async — pass our own request_id so sub-requests are linked
+  runCampaign({ product_name, product_description, target_audience_hint }, request_id)
     .then(result => submitResult(request_id, PUBKEY, result))
     .then(() => console.log('[PM] Result submitted for request', request_id))
     .catch(e  => console.error('[PM] Task failed for request', request_id, ':', e.message))
@@ -84,49 +84,67 @@ app.post('/campaign', async (req, res) => {
 })
 
 // ── Core orchestration ─────────────────────────────────────────────────────
-async function runCampaign({ product_name, product_description, target_audience_hint }) {
+async function runCampaign({ product_name, product_description, target_audience_hint }, parentRequestId) {
+
+  if (parentRequestId) {
+    logAgentEvent(parentRequestId, PUBKEY, 'agent_task_accepted',
+      { agent: 'pm', product: product_name, will_hire: ['market-research', 'copywriting', 'social-strategy'] })
+  }
 
   // ── Step 1: Market Research ──────────────────────────────────────────────
   console.log('\n[PM] Step 1/3 — Hiring Market Researcher (60 sats)')
+  if (parentRequestId) logAgentEvent(parentRequestId, PUBKEY, 'pm_step', { step: '1/3', action: 'hire market-researcher', budget_sats: BUDGETS['market-research'] })
   const researchResult = await hireSpecialist('market-research', {
     product_name,
     product_description,
     target_audience_hint: target_audience_hint || 'developers and AI enthusiasts'
-  })
+  }, parentRequestId)
   console.log('[PM] Research complete:', Object.keys(researchResult.output_payload).join(', '))
+  if (parentRequestId) logAgentEvent(parentRequestId, PUBKEY, 'pm_step_done', { step: '1/3', preview: JSON.stringify(researchResult.output_payload).slice(0, 200) })
 
   // ── Step 2: Copywriting (informed by research) ───────────────────────────
   console.log('\n[PM] Step 2/3 — Hiring Copywriter (60 sats)')
+  if (parentRequestId) logAgentEvent(parentRequestId, PUBKEY, 'pm_step', { step: '2/3', action: 'hire copywriter', budget_sats: BUDGETS['copywriting'] })
   const copyResult = await hireSpecialist('copywriting', {
     product_name,
     product_description,
     market_research: researchResult.output_payload
-  })
+  }, parentRequestId)
   console.log('[PM] Copy complete:', Object.keys(copyResult.output_payload).join(', '))
+  if (parentRequestId) logAgentEvent(parentRequestId, PUBKEY, 'pm_step_done', { step: '2/3', preview: JSON.stringify(copyResult.output_payload).slice(0, 200) })
 
   // ── Step 3: Social Strategy (informed by research + copy) ────────────────
   console.log('\n[PM] Step 3/3 — Hiring Social Strategist (60 sats)')
+  if (parentRequestId) logAgentEvent(parentRequestId, PUBKEY, 'pm_step', { step: '3/3', action: 'hire social-strategist', budget_sats: BUDGETS['social-strategy'] })
   const socialResult = await hireSpecialist('social-strategy', {
     product_name,
     target_audience: researchResult.output_payload.target_audience,
     copy:            copyResult.output_payload
-  })
+  }, parentRequestId)
   console.log('[PM] Social strategy complete:', socialResult.output_payload.posts?.length, 'posts')
+  if (parentRequestId) logAgentEvent(parentRequestId, PUBKEY, 'pm_step_done', { step: '3/3', posts: socialResult.output_payload.posts?.length ?? 0 })
 
   // ── Step 4: PM assembles final deliverable ───────────────────────────────
   console.log('\n[PM] Assembling final campaign...')
+  if (parentRequestId) logAgentEvent(parentRequestId, PUBKEY, 'agent_thinking',
+    { agent: 'pm', model: 'deepseek-chat', max_tokens: 250, prompt_summary: 'Assembling final campaign summary' })
   const assembled = await chat(SYSTEM,
-    `You have received specialist deliverables. Assemble them into a final campaign summary JSON:
+    `Assemble specialist deliverables into a SHORT final campaign summary. Keep every text field to ONE short sentence.
+Return JSON:
 {
-  "campaign_title": "catchy internal title for this campaign",
-  "executive_summary": "2-3 sentence overview of the campaign strategy",
-  "key_message": "the single most important message to communicate",
-  "launch_recommendation": "concrete first action the team should take this week"
+  "campaign_title": "<=8 words",
+  "executive_summary": "ONE short sentence",
+  "key_message": "ONE short sentence",
+  "launch_recommendation": "ONE concrete next action"
 }
 
-Research: ${JSON.stringify(researchResult.output_payload)}
-Copy: ${JSON.stringify(copyResult.output_payload)}
-Social: ${JSON.stringify(socialResult.output_payload)}`)
+Research: ${JSON.stringify(researchResult.output_payload).slice(0, 400)}
+Copy: ${JSON.stringify(copyResult.output_payload).slice(0, 400)}
+Social: ${JSON.stringify(socialResult.output_payload).slice(0, 400)}`,
+    0.5, 250)
+
+  if (parentRequestId) logAgentEvent(parentRequestId, PUBKEY, 'agent_responded',
+    { agent: 'pm', preview: JSON.stringify(assembled).slice(0, 280) })
 
   console.log('\n[PM] === Campaign complete ===\n')
 
@@ -147,12 +165,22 @@ Social: ${JSON.stringify(socialResult.output_payload)}`)
 }
 
 // ── Hire one specialist via AgentMarket ───────────────────────────────────
-async function hireSpecialist(capabilityTag, inputPayload) {
-  const budget      = BUDGETS[capabilityTag]
+async function hireSpecialist(capabilityTag, inputPayload, parentRequestId) {
+  const budget       = BUDGETS[capabilityTag]
   const sellerPubkey = SPECIALIST_PUBKEYS[capabilityTag]
 
-  // 1. Post request to platform — get back an invoice
-  const request = await postRequest(PUBKEY, capabilityTag, inputPayload, budget)
+  // 0. Discover schema — confirm what the specialist accepts/returns
+  const schema = await discoverSchema(capabilityTag)
+  if (schema) {
+    const inputFields  = Object.keys((schema.input_schema.properties  || {}))
+    const outputFields = Object.keys((schema.output_schema.properties || {}))
+    console.log('[PM]   Schema for "' + capabilityTag + '" (' + schema.display_name + '):')
+    console.log('[PM]     Accepts:  ' + (inputFields.join(', ')  || '(none)'))
+    console.log('[PM]     Returns:  ' + (outputFields.join(', ') || '(none)'))
+  }
+
+  // 1. Post request to platform — get back an invoice (or auto-match in dev mode)
+  const request = await postRequest(PUBKEY, capabilityTag, inputPayload, budget, parentRequestId)
   console.log('[PM]   Request posted:', request.id, '| status:', request.status)
 
   // 2. Pay the escrow invoice from PM wallet (if one was generated)

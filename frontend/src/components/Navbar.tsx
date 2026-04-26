@@ -1,5 +1,5 @@
 import { Link, NavLink, useNavigate } from 'react-router-dom';
-import { Search, Menu, Zap, Command, Plus } from 'lucide-react';
+import { Search, Menu, Zap, Command, Plus, UserPlus } from 'lucide-react';
 import { useState, useEffect } from 'react';
 import { Sats } from '@/components/Sats';
 import { AgentAvatar } from '@/components/AgentAvatar';
@@ -122,7 +122,7 @@ export function Navbar() {
           size="sm"
           className="hidden lg:inline-flex h-9 rounded-md bg-primary text-primary-foreground hover:bg-primary/90"
         >
-          <Link to="/browse">
+          <Link to="/session/new">
             <Plus className="h-3.5 w-3.5 mr-1" />
             Start
           </Link>
@@ -142,34 +142,48 @@ export function Navbar() {
           </Link>
         )}
 
-        {/* User dropdown */}
-        <DropdownMenu>
-          <DropdownMenuTrigger className="hidden sm:block focus:outline-none focus:ring-2 focus:ring-ring rounded-lg">
-            <AgentAvatar name={displayName} size="sm" />
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="end" className="w-56">
-            <DropdownMenuLabel className="font-normal">
-              <div className="flex flex-col gap-0.5">
-                <span className="text-sm font-semibold">{displayName}</span>
-                {pubkeyDisplay
-                  ? <span className="text-xs font-mono text-muted-foreground">{truncateAddr(pubkeyDisplay)}</span>
-                  : <span className="text-xs text-muted-foreground">Set pubkey in Dashboard → Settings</span>
-                }
-              </div>
-            </DropdownMenuLabel>
-            <DropdownMenuSeparator />
-            <DropdownMenuItem asChild><Link to="/dashboard">Dashboard</Link></DropdownMenuItem>
-            <DropdownMenuItem asChild><Link to="/profile/create">My Agent Profile</Link></DropdownMenuItem>
-            <DropdownMenuItem asChild><Link to="/sell">Seller Inbox</Link></DropdownMenuItem>
-            <DropdownMenuSeparator />
-            <DropdownMenuItem
-              className="text-muted-foreground cursor-pointer"
-              onClick={handleSignOut}
-            >
-              Sign Out
-            </DropdownMenuItem>
-          </DropdownMenuContent>
-        </DropdownMenu>
+        {/* User dropdown — show "Get Started" when in live mode with no identity */}
+        {isLive && !identityPubkey ? (
+          <Button
+            asChild
+            size="sm"
+            variant="outline"
+            className="hidden sm:inline-flex h-9 gap-1.5"
+          >
+            <Link to="/dashboard?view=settings">
+              <UserPlus className="h-3.5 w-3.5" />
+              Get Started
+            </Link>
+          </Button>
+        ) : (
+          <DropdownMenu>
+            <DropdownMenuTrigger className="hidden sm:block focus:outline-none focus:ring-2 focus:ring-ring rounded-lg">
+              <AgentAvatar name={displayName} size="sm" />
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="w-56">
+              <DropdownMenuLabel className="font-normal">
+                <div className="flex flex-col gap-0.5">
+                  <span className="text-sm font-semibold">{displayName}</span>
+                  {pubkeyDisplay
+                    ? <span className="text-xs font-mono text-muted-foreground">{truncateAddr(pubkeyDisplay)}</span>
+                    : <span className="text-xs text-muted-foreground">Mock mode — no live identity</span>
+                  }
+                </div>
+              </DropdownMenuLabel>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem asChild><Link to="/dashboard">Dashboard</Link></DropdownMenuItem>
+              <DropdownMenuItem asChild><Link to="/profile/create">My Agent Profile</Link></DropdownMenuItem>
+              <DropdownMenuItem asChild><Link to="/sell">Seller Inbox</Link></DropdownMenuItem>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem
+                className="text-muted-foreground cursor-pointer"
+                onClick={handleSignOut}
+              >
+                Sign Out
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        )}
 
         {/* Mobile */}
         <Sheet open={open} onOpenChange={setOpen}>
@@ -213,16 +227,27 @@ export function Navbar() {
                     <Sats amount={walletBalance} />
                   </div>
                 )}
-                <div className="flex items-center gap-2 px-3 py-2">
-                  <AgentAvatar name={displayName} size="sm" />
-                  <div className="flex flex-col min-w-0">
-                    <span className="text-sm font-semibold">{displayName}</span>
-                    {pubkeyDisplay
-                      ? <span className="text-[11px] font-mono text-muted-foreground truncate">{truncateAddr(pubkeyDisplay)}</span>
-                      : <span className="text-[11px] text-muted-foreground">Set pubkey in Dashboard</span>
-                    }
+                {isLive && !identityPubkey ? (
+                  <Link
+                    to="/dashboard?view=settings"
+                    onClick={() => setOpen(false)}
+                    className="flex items-center gap-2 px-3 py-2 rounded-md bg-primary/10 border border-primary/30 text-primary text-sm font-medium hover:bg-primary/20 transition"
+                  >
+                    <UserPlus className="h-4 w-4" />
+                    Get Started — Create Account
+                  </Link>
+                ) : (
+                  <div className="flex items-center gap-2 px-3 py-2">
+                    <AgentAvatar name={displayName} size="sm" />
+                    <div className="flex flex-col min-w-0">
+                      <span className="text-sm font-semibold">{displayName}</span>
+                      {pubkeyDisplay
+                        ? <span className="text-[11px] font-mono text-muted-foreground truncate">{truncateAddr(pubkeyDisplay)}</span>
+                        : <span className="text-[11px] text-muted-foreground">Mock mode</span>
+                      }
+                    </div>
                   </div>
-                </div>
+                )}
               </div>
             </div>
           </SheetContent>

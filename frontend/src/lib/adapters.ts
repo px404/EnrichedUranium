@@ -140,14 +140,27 @@ export function backendRequestToTask(
   r: BackendRequest,
   agentName?: string,
 ): Task {
-  const taskStatus: Task['status'] =
-    r.status === 'completed'
-      ? 'completed'
-      : r.status === 'in_progress'
-      ? 'processing'
-      : r.status === 'timeout' || r.status === 'cancelled'
-      ? 'failed'
-      : 'pending';
+  let taskStatus: Task['status'];
+  switch (r.status) {
+    case 'completed':
+      taskStatus = 'completed';
+      break;
+    case 'in_progress':
+      taskStatus = 'processing';
+      break;
+    case 'cancelled':
+      taskStatus = 'cancelled';
+      break;
+    case 'refunded':
+      taskStatus = 'refunded';
+      break;
+    case 'failed':
+    case 'timeout':
+      taskStatus = 'failed';
+      break;
+    default:
+      taskStatus = 'pending';
+  }
 
   return {
     id: r.id,

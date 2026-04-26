@@ -143,6 +143,50 @@ router.patch('/:pubkey/status', (req, res) => {
   return res.json({ pubkey, status })
 })
 
+// DELETE /actors/:pubkey  — hard-delete an actor and all their associated data
+router.delete('/:pubkey', (req, res) => {
+  const { pubkey } = req.params
+  const actor = prepare('SELECT pubkey FROM actors WHERE pubkey = ?').get(pubkey)
+  if (!actor) return res.status(404).json({ error: 'not_found', message: 'Actor "' + pubkey + '" not found' })
+
+  prepare('DELETE FROM reliability_score_cache WHERE actor_pubkey = ?').run(pubkey)
+  prepare('DELETE FROM bad_faith_flags WHERE buyer_pubkey = ? OR seller_pubkey = ?').run(pubkey, pubkey)
+  prepare('DELETE FROM results WHERE seller_pubkey = ?').run(pubkey)
+  prepare('DELETE FROM transaction_log WHERE actor_pubkey = ?').run(pubkey)
+  prepare('DELETE FROM requests WHERE buyer_pubkey = ? OR selected_seller = ?').run(pubkey, pubkey)
+  prepare('DELETE FROM sessions WHERE buyer_pubkey = ? OR seller_pubkey = ?').run(pubkey, pubkey)
+  prepare('DELETE FROM actors WHERE pubkey = ?').run(pubkey)
+
+  return res.json({ deleted: pubkey })
+})
+
+// GET /actors/:pubkey/schemas — all capability schemas for this actor (agent discovery endpoint)
+router.get('/:pubkey/schemas', (req, res) => {
+  const actor = prepare('SELECT pubkey, capabilities, display_name FROM actors WHERE pubkey = ?').get(req.params.pubkey)
+  if (!actor) return res.status(404).json({ error: 'not_found', message: 'Actor "' + req.params.pubkey + '" not found' })
+
+  const caps = JSON.parse(actor.capabilities || '[]')
+  const schemas = caps.map(cap => {
+    const schema = prepare('SELECT * FROM schemas WHERE capability_tag = ?').get(cap)
+    if (!schema) return null
+    return {
+      capability_tag:   schema.capability_tag,
+      display_name:     schema.display_name,
+      description:      schema.description,
+      input_schema:     JSON.parse(schema.input_schema  || '{}'),
+      output_schema:    JSON.parse(schema.output_schema || '{}'),
+      strength_score:   schema.strength_score
+    }
+  }).filter(Boolean)
+
+  return res.json({
+    actor_pubkey: req.params.pubkey,
+    display_name: actor.display_name,
+    capability_count: schemas.length,
+    capabilities: schemas
+  })
+})
+
 // GET /actors/:pubkey/history
 router.get('/:pubkey/history', (req, res) => {
   const { pubkey } = req.params
