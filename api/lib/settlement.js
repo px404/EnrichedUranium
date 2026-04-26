@@ -26,6 +26,61 @@ function logEvent(requestId, event, actorPubkey, detail) {
       detail ? JSON.stringify(detail) : null, Math.floor(Date.now() / 1000))
 }
 
+// ── Internal: auto-redispatch on first schema failure ─────────────────────────
+
+/**
+ * Re-send the task to the same seller after a first validation failure.
+ * This lets the buyer (PM) just poll for 'completed' without needing retry logic.
+ */
+async function autoRedispatch(requestId, req) {
+  const seller = prepare('SELECT endpoint_url FROM actors WHERE pubkey = ?').get(req.selected_seller)
+  if (!seller || !seller.endpoint_url) {
+    console.warn('[settlement] Auto-redispatch: seller has no endpoint_url, skipping')
+    return
+  }
+
+  const PLATFORM_URL = process.env.PLATFORM_URL || 'http://localhost:3001'
+  const payload = {
+    request_id:     requestId,
+    capability_tag: req.capability_tag,
+    input_payload:  JSON.parse(req.input_payload),
+    budget_sats:    req.budget_sats,
+    deadline_unix:  req.deadline_unix,
+    result_url:     PLATFORM_URL + '/results/' + requestId,
+    platform_url:   PLATFORM_URL,
+    is_retry:       true,
+  }
+
+  const headers = { 'Content-Type': 'application/json' }
+  if (process.env.PLATFORM_SECRET) headers['X-Platform-Secret'] = process.env.PLATFORM_SECRET
+
+  const controller = new AbortController()
+  const timeout    = setTimeout(() => controller.abort(), 10000)
+  try {
+    const response = await fetch(seller.endpoint_url, {
+      method: 'POST', headers, body: JSON.stringify(payload), signal: controller.signal
+    })
+    clearTimeout(timeout)
+    if (response.ok) {
+      console.log('[settlement] Auto-redispatch delivered to', req.selected_seller)
+      logEvent(requestId, 'task_dispatched', req.selected_seller, {
+        endpoint_url: seller.endpoint_url, http_status: response.status, is_retry: true
+      })
+    } else {
+      console.warn('[settlement] Auto-redispatch HTTP', response.status, 'from', seller.endpoint_url)
+      logEvent(requestId, 'task_dispatch_failed', req.selected_seller, {
+        endpoint_url: seller.endpoint_url, http_status: response.status, is_retry: true
+      })
+    }
+  } catch (e) {
+    clearTimeout(timeout)
+    console.warn('[settlement] Auto-redispatch error:', e.message)
+    logEvent(requestId, 'task_dispatch_failed', req.selected_seller, {
+      endpoint_url: seller.endpoint_url, error: e.message, is_retry: true
+    })
+  }
+}
+
 // ── Settlement helpers ────────────────────────────────────────────────────────
 
 /**
@@ -83,10 +138,18 @@ async function settleFailure(requestId, isRetry) {
   const now   = Math.floor(Date.now() / 1000)
 
   if (!isRetry) {
-    // First failure — reset to matched so seller can retry
-    prepare(`UPDATE requests SET status='matched', retry_count = retry_count + 1 WHERE id=?`)
-      .run(requestId)
+    // First failure — keep the same seller, increment retry counter, and re-dispatch.
+    // Leaving status as in_progress (re-dispatch handles it) so the buyer (PM) can
+    // keep polling for 'completed' without needing to know about the retry.
+    prepare('UPDATE requests SET retry_count = retry_count + 1 WHERE id=?').run(requestId)
     logEvent(requestId, 'schema_failed', req.selected_seller, { retry: true })
+
+    // Re-dispatch to the same seller — do it asynchronously so we don't block the
+    // result POST response.
+    setImmediate(() => autoRedispatch(requestId, req).catch(e =>
+      console.error('[settlement] Auto-redispatch failed for', requestId, ':', e.message)
+    ))
+
     return { retried: true }
   }
 

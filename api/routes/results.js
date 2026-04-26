@@ -17,7 +17,7 @@ const { validateResult }   = require('../validators/resultValidator')
 const { logEvent, settleSuccess, settleFailure, settleTimeout } = require('../lib/settlement')
 const { evaluateBadFaith } = require('../lib/reliabilityScore')
 
-router.post('/:request_id', (req, res) => {
+router.post('/:request_id', async (req, res) => {
   const { request_id }    = req.params
   const { seller_pubkey, output_payload, subtasks_completed } = req.body
 
@@ -70,7 +70,7 @@ router.post('/:request_id', (req, res) => {
   })
 
   const isRetry          = request.retry_count >= 1
-  const settlementResult = settleFailure(request_id, isRetry, subtasks_completed)
+  const settlementResult = await settleFailure(request_id, isRetry, subtasks_completed)
 
   if (!settlementResult.retry) {
     try { evaluateBadFaith() } catch (e) { console.error('[bad-faith eval] failed:', e.message) }
